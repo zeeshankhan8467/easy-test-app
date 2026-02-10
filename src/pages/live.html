@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EasyTest Live - Run Exam</title>
+  <link rel="stylesheet" href="../styles/main.css">
+</head>
+<body>
+  <div class="live-exam" id="liveExam">
+    <div class="live-header">
+      <div class="title" id="examTitle">—</div>
+      <div class="connection-status disconnected" id="connectionStatus">Clicker disconnected</div>
+      <a href="#" class="btn btn-secondary" id="backLink">← Back to dashboard</a>
+    </div>
+
+    <main class="main-content">
+      <!-- Question Panel (same structure as acadally session) -->
+      <div class="question-panel">
+        <!-- Session Controls -->
+        <div class="session-controls">
+          <div class="control-group">
+            <span class="control-label">Timer</span>
+            <div class="timer-display" id="timerDisplay">00:00</div>
+          </div>
+          <div class="control-group" style="flex: 1;">
+            <span class="control-label">Session Status</span>
+            <div id="sessionStatus" class="status-badge status-pending">
+              <span class="status-dot"></span>
+              <span>Ready</span>
+            </div>
+          </div>
+          <div class="control-buttons">
+            <button type="button" class="btn btn-primary" id="startBtn">Start</button>
+            <button type="button" class="btn btn-secondary hidden" id="pauseBtn">Pause</button>
+            <button type="button" class="btn btn-secondary hidden" id="nextBtn">Next</button>
+            <button type="button" class="btn btn-danger hidden" id="endBtn">End exam</button>
+            <button type="button" class="btn btn-secondary" id="fullscreenBtn">Full screen</button>
+          </div>
+        </div>
+
+        <!-- Question Card (same design as acadally) -->
+        <div class="question-card" id="questionCard">
+          <div id="questionContent">
+            <div class="question-meta">
+              <span class="question-badge" id="questionNumber">Q1</span>
+              <span class="question-type" id="questionType">MCQ</span>
+            </div>
+            <div class="question-text" id="questionText">—</div>
+            <div class="options-list" id="optionsList"></div>
+            <div class="question-nav" id="questionNav"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sidebar: Live Responses -->
+      <div class="sidebar-panel">
+        <div class="responses-panel">
+          <div class="section-title">
+            <h3>Live Responses</h3>
+          </div>
+          <div class="responses-header">
+            <div>
+              <div class="response-count">
+                <span id="responseCount">0</span>/<span id="totalStudents">0</span>
+              </div>
+              <div class="response-total">submitted</div>
+            </div>
+            <div class="response-percent" id="responsePercent">0%</div>
+          </div>
+          <div class="responses-list" id="responsesList">
+            <div class="responses-placeholder">Waiting for responses...</div>
+          </div>
+        </div>
+        <div class="sync-status-wrap">
+          <div class="sync-status" id="syncStatus"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="live.js"></script>
+</body>
+</html>

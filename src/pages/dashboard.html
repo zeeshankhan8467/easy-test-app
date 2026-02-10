@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EasyTest Live - Dashboard</title>
+  <link rel="stylesheet" href="../styles/main.css">
+</head>
+<body>
+  <div class="dashboard">
+    <header>
+      <h1>EasyTest Live</h1>
+      <div class="header-right">
+        <div id="baseStationStatus" class="base-station-status disconnected" title="Clicker base station">
+          <span class="base-station-dot"></span>
+          <span class="base-station-label">Base station: Disconnected</span>
+        </div>
+        <div class="user-bar">
+          <span id="userName"></span>
+          <button type="button" class="btn btn-secondary" id="logoutBtn">Log out</button>
+        </div>
+      </div>
+    </header>
+
+    <p class="meta dashboard-intro">Select a frozen exam to run live. Connect the clicker base station before starting.</p>
+
+    <section class="dashboard-section">
+      <h2 class="section-heading">Exams (your frozen exams)</h2>
+      <div id="examList" class="exam-list"></div>
+      <div id="noExams" class="no-exams hidden">No frozen exams found. Freeze an exam in the EasyTest web app first.</div>
+    </section>
+
+  <!-- Attendance modal (before starting exam) -->
+  <div id="attendanceModal" class="attendance-modal hidden" role="dialog" aria-labelledby="attendanceModalTitle" aria-modal="true">
+    <div class="attendance-modal-backdrop" id="attendanceModalBackdrop"></div>
+    <div class="attendance-modal-content">
+      <div class="attendance-modal-header">
+        <h2 id="attendanceModalTitle" class="attendance-modal-title">Attendance</h2>
+        <button type="button" class="attendance-modal-close" id="attendanceModalClose" aria-label="Close">&times;</button>
+      </div>
+      <p class="attendance-modal-hint">Students press any key (A–D) on their clicker to be marked present.</p>
+      <div class="attendance-modal-stats">
+        <div class="attendance-stat attendance-stat-present">
+          <span id="attendanceModalPresent" class="attendance-stat-value">0</span>
+          <span class="attendance-stat-label">Present</span>
+        </div>
+        <span class="attendance-stat-divider">/</span>
+        <div class="attendance-stat attendance-stat-total">
+          <span id="attendanceModalTotal" class="attendance-stat-value">0</span>
+          <span class="attendance-stat-label">Total</span>
+        </div>
+      </div>
+      <div class="attendance-modal-list-wrap">
+        <div class="attendance-modal-list" id="attendanceModalList"></div>
+      </div>
+      <div class="attendance-modal-actions">
+        <button type="button" class="btn btn-secondary" id="attendanceConnectBtn">Connect & start</button>
+        <button type="button" class="btn btn-outline" id="attendanceDoneBtn">Done</button>
+        <button type="button" class="btn btn-primary" id="attendanceRunExamBtn">Run exam</button>
+      </div>
+    </div>
+  </div>
+
+    <section class="dashboard-section">
+      <h2 class="section-heading">Students (participants in your exams)</h2>
+      <div id="studentList" class="student-list"></div>
+      <div id="noStudents" class="no-exams hidden">No students yet. Add participants to exams in the EasyTest web app.</div>
+    </section>
+  </div>
+  <script src="dashboard.js"></script>
+</body>
+</html>
