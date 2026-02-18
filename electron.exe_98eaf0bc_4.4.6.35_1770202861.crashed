@@ -1,0 +1,16 @@
+*****************************Application crashed**************************************
+ErrorCode: C0000005
+Address: 4EC86194
+Flags: 00000000
+CallStack: 
+koffi:[N/A](N/A:)
+koffi:[node_api_module_get_api_version_v1](N/A:)
+EasyTestSDK_x64:[WriteNFCData](N/A:)
+EasyTestSDK_x64:[WriteNFCData](N/A:)
+EasyTestSDK_x64:[SetItemTimeout](N/A:)
+EasyTestSDK_x64:[WriteNFCData](N/A:)
+EasyTestSDK_x64:[WriteNFCData](N/A:)
+EasyTestSDK_x64:[Java_cn_sunars_sdk_SunARS_setAudioFormat0](N/A:)
+KERNEL32:[BaseThreadInitThunk](N/A:)
+ntdll:[RtlUserThreadStart](N/A:)
+********************************************************************************
