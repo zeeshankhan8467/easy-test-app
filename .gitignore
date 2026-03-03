@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+
+# Build / runtime
+dist/
+*.log
+.DS_Store
+
+# Optional: uncomment if you use env files
+# .env
+# .env.local

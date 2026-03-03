@@ -17,7 +17,7 @@ Windows desktop application for **running live clicker-based exams** with the Ea
 
 - **Node.js** (e.g. 18+)
 - **Windows** (target OS for .exe)
-- **EasyTest backend** running (e.g. `http://localhost:8000/api/`)
+- **EasyTest backend** running (e.g. `http://169.144.18.139/api/`)
 - **Clicker hardware** compatible with EasyTest SDK (same as acadally-electron-app)
 
 ## Hardware / SDK
@@ -43,7 +43,7 @@ Without the DLL, the app runs but clicker connection will fail (SDK not loaded).
    ```
 
 3. **Configure API URL** (optional)  
-   Default is `http://localhost:8000/api/`. To override:
+   Default is `http://169.144.18.139/api/`. To override:
    ```bash
    set EASYTEST_API_URL=https://your-easytest-api.com/api/
    npm start

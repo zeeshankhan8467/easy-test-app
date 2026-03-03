@@ -105,20 +105,30 @@ function renderQuestion() {
   if (questionTypeEl) questionTypeEl.textContent = (q.type || 'MCQ').toUpperCase();
   if (questionText) questionText.textContent = q.text || '—';
 
+  // Option display: "alpha" -> A,B,C,D; "numeric" -> 1,2,3,4 (from API, or infer if options are numeric)
+  let optionDisplay = (q.option_display || (snapshot && snapshot.option_display) || '').toString().toLowerCase();
+  if (optionDisplay !== 'numeric' && optionDisplay !== 'alpha' && opts && opts.length > 0) {
+    const allNumeric = opts.every(o => /^\d+$/.test(String(o).trim()));
+    if (allNumeric) optionDisplay = 'numeric';
+    else optionDisplay = 'alpha';
+  }
+  if (optionDisplay !== 'numeric') optionDisplay = 'alpha';
+  const optionKeys = (optionDisplay === 'numeric') ? ['1', '2', '3', '4'] : ['A', 'B', 'C', 'D'];
+  const alphaKeys = ['A', 'B', 'C', 'D']; // clicker always sends A/B/C/D; we count by these
+
   const counts = { A: 0, B: 0, C: 0, D: 0 };
   Object.values(responses).forEach(r => {
     if (r.answer && counts[r.answer] !== undefined) counts[r.answer]++;
   });
   const totalResponses = Object.keys(responses).length || 1;
 
-  const optionKeys = ['A', 'B', 'C', 'D'];
   optionsList.innerHTML = optionKeys.slice(0, Math.max(4, (opts && opts.length) || 4)).map((key, idx) => {
     const label = (opts && opts[idx] != null) ? (typeof opts[idx] === 'string' ? opts[idx] : (opts[idx].text || opts[idx].label || key)) : key;
-    const count = counts[key] || 0;
+    const count = counts[alphaKeys[idx]] || 0;
     const pct = Math.round((count / totalResponses) * 100);
     return `
       <div class="option-item">
-        <div class="option-key">${key}</div>
+        <div class="option-key">${optionKeys[idx]}</div>
         <div class="option-content">
           <div class="option-text-row">${escapeHtml(label)}</div>
           <div class="option-bar"><div class="option-bar-fill" style="width:${pct}%"></div></div>

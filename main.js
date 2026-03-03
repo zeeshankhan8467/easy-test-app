@@ -8,11 +8,58 @@ const path = require('path');
 const fs = require('fs');
 
 // ============ Configuration ============
-const API_BASE_URL = process.env.EASYTEST_API_URL || 'http://localhost:8000/api/';
+const DEFAULT_API_URL = 'http://168.144.18.139/api/';
+let configPath = null;
+let logPath = null;
+function getLogPath() {
+  if (!logPath) logPath = path.join(app.getPath('userData'), 'easytest-live.log');
+  return logPath;
+}
+function log(msg, data) {
+  const line = `[${new Date().toISOString()}] ${msg}${data != null ? ' ' + JSON.stringify(data) : ''}\n`;
+  console.log(msg, data != null ? data : '');
+  try {
+    fs.appendFileSync(getLogPath(), line);
+  } catch (e) { console.error('log write:', e); }
+}
+function getConfigPath() {
+  if (!configPath) configPath = path.join(app.getPath('userData'), 'config.json');
+  return configPath;
+}
+function getApiBaseUrl() {
+  let source = 'default';
+  let url = DEFAULT_API_URL;
+  try {
+    const p = getConfigPath();
+    if (fs.existsSync(p)) {
+      const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (cfg.apiUrl && typeof cfg.apiUrl === 'string') {
+        url = cfg.apiUrl.trim();
+        url = url.endsWith('/') ? url : url + '/';
+        source = 'config.json';
+      }
+    }
+  } catch (e) { console.error('getApiBaseUrl config:', e); }
+  if (source === 'default' && process.env.EASYTEST_API_URL) {
+    url = (process.env.EASYTEST_API_URL || '').replace(/\/*$/, '/');
+    source = 'env';
+  } else if (source === 'default') {
+    url = (url || DEFAULT_API_URL).replace(/\/*$/, '/');
+  }
+  return url;
+}
 
 function makeRequest(url, options = {}) {
+  const TIMEOUT_MS = 20000;
+  log('API request', { method: options.method || 'GET', url });
   return new Promise((resolve, reject) => {
     const request = net.request({ method: options.method || 'GET', url });
+    const timeout = setTimeout(() => {
+      request.abort();
+      const errMsg = 'Connection timed out. Check server address and network.';
+      log('API error', { url, error: errMsg });
+      reject(new Error(errMsg));
+    }, TIMEOUT_MS);
 
     if (options.headers) {
       Object.entries(options.headers).forEach(([k, v]) => request.setHeader(k, v));
@@ -20,8 +67,12 @@ function makeRequest(url, options = {}) {
 
     let responseData = '';
     request.on('response', (response) => {
+      clearTimeout(timeout);
       response.on('data', (chunk) => { responseData += chunk.toString(); });
       response.on('end', () => {
+        if (response.statusCode >= 400) {
+          log('API response', { url, status: response.statusCode, body: responseData?.slice(0, 200) });
+        }
         try {
           const data = JSON.parse(responseData);
           resolve({ ok: response.statusCode >= 200 && response.statusCode < 300, status: response.statusCode, data });
@@ -30,7 +81,11 @@ function makeRequest(url, options = {}) {
         }
       });
     });
-    request.on('error', reject);
+    request.on('error', (err) => {
+      clearTimeout(timeout);
+      log('API error', { url, error: err.message || String(err) });
+      reject(err);
+    });
     if (options.body) request.write(options.body);
     request.end();
   });
@@ -211,6 +266,11 @@ function createWindow() {
 app.whenReady().then(() => {
   loadSDK();
   createWindow();
+  log('EasyTest Live started', {
+    apiBaseUrl: getApiBaseUrl(),
+    userData: app.getPath('userData'),
+    logFile: getLogPath(),
+  });
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -226,7 +286,7 @@ app.on('window-all-closed', () => {
 // ============ Auth (EasyTest: email + password -> token, user) ============
 ipcMain.handle('auth:login', async (event, { email, password }) => {
   try {
-    const response = await makeRequest(`${API_BASE_URL}auth/login/`, {
+    const response = await makeRequest(`${getApiBaseUrl()}auth/login/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify({ email, password }),
@@ -267,7 +327,7 @@ function authHeaders() {
 ipcMain.handle('api:fetchExams', async () => {
   if (!getStore().token) return { success: false, error: 'Not authenticated' };
   try {
-    const response = await makeRequest(`${API_BASE_URL}exams/`, { headers: authHeaders() });
+    const response = await makeRequest(`${getApiBaseUrl()}exams/`, { headers: authHeaders() });
     if (response.ok) {
       const list = Array.isArray(response.data) ? response.data : (response.data?.results || []);
       return { success: true, data: list };
@@ -281,8 +341,15 @@ ipcMain.handle('api:fetchExams', async () => {
 ipcMain.handle('api:fetchExamSnapshot', async (event, examId) => {
   if (!getStore().token) return { success: false, error: 'Not authenticated' };
   try {
-    const response = await makeRequest(`${API_BASE_URL}exams/${examId}/snapshot/`, { headers: authHeaders() });
-    if (response.ok) return { success: true, data: response.data };
+    const response = await makeRequest(`${getApiBaseUrl()}exams/${examId}/snapshot/`, { headers: authHeaders() });
+    if (response.ok) {
+      const snapshotJson = JSON.stringify(response.data, null, 2);
+      log('Exam snapshot API response (full)', { examId, snapshotPreview: snapshotJson.slice(0, 500) + '...' });
+      try {
+        fs.appendFileSync(getLogPath(), '\n--- Exam snapshot full JSON ---\n' + snapshotJson + '\n---\n');
+      } catch (e) { console.error('append snapshot to log:', e); }
+      return { success: true, data: response.data };
+    }
     return { success: false, error: response.data?.detail || 'Failed to fetch snapshot' };
   } catch (e) {
     return { success: false, error: e.message };
@@ -292,7 +359,7 @@ ipcMain.handle('api:fetchExamSnapshot', async (event, examId) => {
 ipcMain.handle('api:fetchParticipants', async (event, examId) => {
   if (!getStore().token) return { success: false, error: 'Not authenticated' };
   try {
-    const url = examId != null ? `${API_BASE_URL}participants/?exam_id=${examId}` : `${API_BASE_URL}participants/`;
+    const url = examId != null ? `${getApiBaseUrl()}participants/?exam_id=${examId}` : `${getApiBaseUrl()}participants/`;
     const response = await makeRequest(url, { headers: authHeaders() });
     if (response.ok) {
       const list = Array.isArray(response.data) ? response.data : (response.data?.results || []);
@@ -317,7 +384,7 @@ ipcMain.handle('api:syncLiveResults', async (event, { examId, responses, attenda
     console.log('[EasyTest Live] First response: participant_id=' + (r.participant_id ?? 'none') + ', clicker_id="' + (r.clicker_id ?? '') + '", question_id=' + (r.question_id ?? ''));
   }
   try {
-    const response = await makeRequest(`${API_BASE_URL}exams/${examId}/sync_live_results/`, {
+    const response = await makeRequest(`${getApiBaseUrl()}exams/${examId}/sync_live_results/`, {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify({ responses: responses || [], attendance: attendance || [] }),

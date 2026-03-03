@@ -285,6 +285,7 @@ async function runExam(examId) {
   }
 
   const snapshot = snapResult.data;
+  console.log('[EasyTest Live] Exam snapshot API response (questions/snapshot):', JSON.stringify(snapshot, null, 2));
   const participants = partResult.success ? (partResult.data || []) : [];
   const allParticipants = allPartResult.success ? (allPartResult.data || []) : [];
   const clickerToParticipant = {};
