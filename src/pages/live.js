@@ -67,6 +67,26 @@ function loadExamFromStorage() {
   clickerToParticipant = data.clickerToParticipant || {};
   const rawQuestions = (snapshot.questions && Array.isArray(snapshot.questions)) ? snapshot.questions : [];
   questions = [...rawQuestions].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  // Ensure each question has options as a real array (snapshot can have array, string, or object)
+  questions.forEach(q => {
+    let o = q.options;
+    if (o == null) o = [];
+    if (typeof o === 'string') { try { o = JSON.parse(o); } catch (e) { o = []; } }
+    if (!Array.isArray(o) && o && typeof o === 'object') {
+      o = Object.keys(o)
+        .filter(k => /^\d+$/.test(k))
+        .sort((a, b) => parseInt(a, 10) - parseInt(b, 10))
+        .map(k => o[k]);
+    }
+    if (!Array.isArray(o)) o = [];
+    q.options = o;
+  });
+  // Debug: what live page has after load (open DevTools on the live window)
+  console.log('[EasyTest Live] Loaded exam from storage. Snapshot:', data.snapshot);
+  console.log('[EasyTest Live] Questions after normalize:', questions.length);
+  questions.forEach((q, i) => {
+    console.log(`[EasyTest Live] Q${i + 1} options count=${(q.options || []).length}`, q.options);
+  });
   examTitle.textContent = snapshot.title || 'Exam';
   participantNames = {};
   Object.values(clickerToParticipant).forEach(p => { if (p && p.id != null) participantNames[p.id] = p.name || 'Participant'; });
@@ -100,12 +120,29 @@ function renderQuestion() {
     return;
   }
   const q = questions[currentIndex];
-  const opts = q.options || [];
+  // Normalize options to array (snapshot may have array, stringified JSON, or object with numeric keys)
+  let opts = q.options;
+  if (opts == null) opts = [];
+  if (typeof opts === 'string') {
+    try { opts = JSON.parse(opts); } catch (e) { opts = []; }
+  }
+  if (!Array.isArray(opts)) {
+    if (opts && typeof opts === 'object' && !Array.isArray(opts)) {
+      opts = Object.keys(opts)
+        .filter(k => /^\d+$/.test(k))
+        .sort((a, b) => parseInt(a, 10) - parseInt(b, 10))
+        .map(k => opts[k]);
+    } else {
+      opts = [];
+    }
+  }
+  const optionCount = Math.max(1, opts.length);
+
   if (questionNumber) questionNumber.textContent = `Q${currentIndex + 1}`;
   if (questionTypeEl) questionTypeEl.textContent = (q.type || 'MCQ').toUpperCase();
   if (questionText) questionText.textContent = q.text || '—';
 
-  // Option display: "alpha" -> A,B,C,D; "numeric" -> 1,2,3,4 (from API, or infer if options are numeric)
+  // Option display: "alpha" -> A,B,C,...; "numeric" -> 1,2,3,... (from API, or infer if options are numeric)
   let optionDisplay = (q.option_display || (snapshot && snapshot.option_display) || '').toString().toLowerCase();
   if (optionDisplay !== 'numeric' && optionDisplay !== 'alpha' && opts && opts.length > 0) {
     const allNumeric = opts.every(o => /^\d+$/.test(String(o).trim()));
@@ -113,16 +150,23 @@ function renderQuestion() {
     else optionDisplay = 'alpha';
   }
   if (optionDisplay !== 'numeric') optionDisplay = 'alpha';
-  const optionKeys = (optionDisplay === 'numeric') ? ['1', '2', '3', '4'] : ['A', 'B', 'C', 'D'];
-  const alphaKeys = ['A', 'B', 'C', 'D']; // clicker always sends A/B/C/D; we count by these
+  const n = optionCount;
+  // Build labels for all options: numeric 1..N or alpha A,B,C,...,Z, then 27,28,...
+  const optionKeys = [];
+  const alphaKeys = [];
+  for (let i = 0; i < n; i++) {
+    optionKeys.push(optionDisplay === 'numeric' ? String(i + 1) : (i < 26 ? String.fromCharCode(65 + i) : String(i + 1)));
+    alphaKeys.push(i < 26 ? String.fromCharCode(65 + i) : String(i + 1));
+  }
 
-  const counts = { A: 0, B: 0, C: 0, D: 0 };
+  const counts = {};
+  alphaKeys.forEach(k => { counts[k] = 0; });
   Object.values(responses).forEach(r => {
     if (r.answer && counts[r.answer] !== undefined) counts[r.answer]++;
   });
   const totalResponses = Object.keys(responses).length || 1;
 
-  optionsList.innerHTML = optionKeys.slice(0, Math.max(4, (opts && opts.length) || 4)).map((key, idx) => {
+  optionsList.innerHTML = optionKeys.map((key, idx) => {
     const label = (opts && opts[idx] != null) ? (typeof opts[idx] === 'string' ? opts[idx] : (opts[idx].text || opts[idx].label || key)) : key;
     const count = counts[alphaKeys[idx]] || 0;
     const pct = Math.round((count / totalResponses) * 100);

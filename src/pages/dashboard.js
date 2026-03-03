@@ -285,7 +285,17 @@ async function runExam(examId) {
   }
 
   const snapshot = snapResult.data;
-  console.log('[EasyTest Live] Exam snapshot API response (questions/snapshot):', JSON.stringify(snapshot, null, 2));
+  // Debug: full API response and per-question options
+  console.log('[EasyTest Live] Snapshot API response (full):', snapResult);
+  console.log('[EasyTest Live] Snapshot data:', JSON.stringify(snapshot, null, 2));
+  if (snapshot && Array.isArray(snapshot.questions)) {
+    snapshot.questions.forEach((q, i) => {
+      const opts = q.options;
+      const type = opts == null ? 'null' : Array.isArray(opts) ? 'array' : typeof opts;
+      const len = Array.isArray(opts) ? opts.length : (opts && typeof opts === 'object' ? Object.keys(opts).length : 0);
+      console.log(`[EasyTest Live] Q${i + 1} options: type=${type}, length=${len}`, opts);
+    });
+  }
   const participants = partResult.success ? (partResult.data || []) : [];
   const allParticipants = allPartResult.success ? (allPartResult.data || []) : [];
   const clickerToParticipant = {};
