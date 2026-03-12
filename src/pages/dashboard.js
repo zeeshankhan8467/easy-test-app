@@ -52,29 +52,36 @@ async function loadUser() {
 }
 
 async function loadExams() {
-  const result = await window.electronAPI.fetchExams();
-  if (!result.success) {
-    if (isAuthError(result)) {
+  const [examsResult, participantsResult] = await Promise.all([
+    window.electronAPI.fetchExams(),
+    window.electronAPI.fetchParticipants(null),
+  ]);
+  if (!examsResult.success) {
+    if (isAuthError(examsResult)) {
       await window.electronAPI.nav('login');
       return;
     }
-    examListEl.innerHTML = `<div class="no-exams">${escapeHtml(result.error || 'Failed to load exams')}</div>`;
+    examListEl.innerHTML = `<div class="no-exams">${escapeHtml(examsResult.error || 'Failed to load exams')}</div>`;
     noExamsEl.classList.add('hidden');
     return;
   }
 
-  const exams = (result.data || []).filter(e => e.status === 'frozen');
+  const exams = (examsResult.data || []).filter(e => e.status === 'frozen');
+  const totalStudents = Array.isArray(participantsResult?.data) ? participantsResult.data.length : 0;
   if (exams.length === 0) {
     noExamsEl.classList.remove('hidden');
     examListEl.innerHTML = '';
     return;
   }
   noExamsEl.classList.add('hidden');
-  examListEl.innerHTML = exams.map(exam => `
+  examListEl.innerHTML = exams.map(exam => {
+    const enrolled = exam.participant_count ?? 0;
+    const displayCount = enrolled > 0 ? enrolled : totalStudents;
+    return `
     <div class="exam-item" data-exam-id="${exam.id}">
       <div>
         <h3>${escapeHtml(exam.title)}</h3>
-        <div class="meta">Questions: ${exam.question_count ?? 0} · Participants: ${exam.participant_count ?? 0}</div>
+        <div class="meta">Questions: ${exam.question_count ?? 0} · Participants: ${displayCount}</div>
       </div>
       <div class="actions">
         <span class="status-badge status-frozen">Frozen</span>
@@ -82,7 +89,8 @@ async function loadExams() {
         <button type="button" class="btn btn-primary run-exam-btn" data-exam-id="${exam.id}">Run exam</button>
       </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   examListEl.querySelectorAll('.run-exam-btn').forEach(btn => {
     btn.addEventListener('click', () => runExam(btn.dataset.examId));
@@ -183,7 +191,6 @@ async function openAttendance(examId, examTitle) {
     window.electronAPI.fetchParticipants(examIdNum),
     window.electronAPI.fetchParticipants(null),
   ]);
-  const participants = partResult.success ? (partResult.data || []) : [];
   const allParticipants = allPartResult.success ? (allPartResult.data || []) : [];
   const clickerToParticipant = {};
   allParticipants.forEach(p => {
@@ -196,13 +203,16 @@ async function openAttendance(examId, examTitle) {
     if (!isNaN(num)) clickerToParticipant[num] = info;
   });
 
+  // Use all participants with a clicker ID for the attendance list (not just exam-enrolled),
+  // so we can take attendance even when the exam has no participants assigned yet.
   const uniqueParticipants = [];
   const seenIds = new Set();
-  participants.forEach(p => {
-    if (p && p.id != null && !seenIds.has(p.id)) {
-      seenIds.add(p.id);
-      uniqueParticipants.push(p);
-    }
+  allParticipants.forEach(p => {
+    if (!p || p.id == null) return;
+    if (!p.clicker_id || String(p.clicker_id).trim() === '') return;
+    if (seenIds.has(p.id)) return;
+    seenIds.add(p.id);
+    uniqueParticipants.push(p);
   });
 
   attendanceState = {
@@ -244,7 +254,7 @@ async function startAttendanceSession() {
     timeout: 0,
     minSelect: 1,
     maxSelect: 1,
-    submitMode: 0,
+    submitMode: 2, // 1 = no OK on clicker (config.json clickerSubmitMode overrides)
     displayMode: 0,
   });
   if (startResult.success) {
@@ -285,9 +295,11 @@ async function runExam(examId) {
   }
 
   const snapshot = snapResult.data;
-  // Debug: full API response and per-question options
-  console.log('[EasyTest Live] Snapshot API response (full):', snapResult);
-  console.log('[EasyTest Live] Snapshot data:', JSON.stringify(snapshot, null, 2));
+  // Print API response so you can check (DevTools Console)
+  console.log('[EasyTest Live] ========== Exam snapshot API response ==========');
+  console.log('[EasyTest Live] option_display:', snapshot?.option_display, '| duration:', snapshot?.duration, '| revisable:', snapshot?.revisable);
+  console.log('[EasyTest Live] Full snapshot:', JSON.stringify(snapshot, null, 2));
+  console.log('[EasyTest Live] =================================================');
   if (snapshot && Array.isArray(snapshot.questions)) {
     snapshot.questions.forEach((q, i) => {
       const opts = q.options;
@@ -337,9 +349,27 @@ if (attendanceRunExamBtn) attendanceRunExamBtn.addEventListener('click', () => c
   if (!ok) return;
   updateBaseStationStatus(false);
   const status = await window.electronAPI.getSDKStatus();
-  updateBaseStationStatus(status.connected);
+  updateBaseStationStatus(!!status.connected);
   window.electronAPI.onConnectEvent((data) => {
-    updateBaseStationStatus(data.mode === 1);
+    const connected = data.mode === 1;
+    updateBaseStationStatus(connected);
+    setTimeout(() => {
+      window.electronAPI.getSDKStatus().then((s) => updateBaseStationStatus(!!s.connected));
+    }, 100);
   });
+  if (status.loaded && !status.connected) {
+    window.electronAPI.connectClicker(1).then((conn) => {
+      if (conn.success) {
+        window.electronAPI.getSDKStatus().then((s) => updateBaseStationStatus(!!s.connected));
+      }
+    });
+    setTimeout(() => {
+      window.electronAPI.getSDKStatus().then((s) => updateBaseStationStatus(!!s.connected));
+    }, 1500);
+  }
+  const statusInterval = setInterval(() => {
+    window.electronAPI.getSDKStatus().then((s) => updateBaseStationStatus(!!s.connected));
+  }, 2000);
+  window.addEventListener('beforeunload', () => clearInterval(statusInterval));
   await Promise.all([loadExams(), loadStudents()]);
 })();

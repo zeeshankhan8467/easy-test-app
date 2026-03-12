@@ -1,6 +1,6 @@
 {
   "name": "easytest-live",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "description": "EasyTest Live - Classroom clicker-based exam application",
   "main": "main.js",
   "scripts": {
@@ -8,9 +8,21 @@
     "dev": "electron . --dev",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
-    "build:win:installer": "electron-builder --win --publish=never"
+    "build:win:installer": "electron-builder --win --publish=never",
+    "build:win:versioned": "node build-versioned.js",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:major": "npm version major --no-git-tag-version",
+    "release:patch": "npm run version:patch && npm run build:win:versioned",
+    "release:minor": "npm run version:minor && npm run build:win:versioned",
+    "release:major": "npm run version:major && npm run build:win:versioned"
   },
-  "keywords": ["electron", "clicker", "easytest", "education"],
+  "keywords": [
+    "electron",
+    "clicker",
+    "easytest",
+    "education"
+  ],
   "author": "EasyTest",
   "license": "MIT",
   "devDependencies": {
@@ -24,7 +36,9 @@
   "build": {
     "appId": "com.easytest.live",
     "productName": "EasyTest Live",
-    "directories": { "output": "dist" },
+    "directories": {
+      "output": "dist"
+    },
     "files": [
       "main.js",
       "preload.js",
@@ -33,9 +47,18 @@
       "node_modules/**/*",
       "package.json"
     ],
-    "asarUnpack": ["EasyTestSDK_x64.dll"],
+    "asarUnpack": [
+      "EasyTestSDK_x64.dll"
+    ],
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "artifactName": "${productName}-${version}-Setup.${ext}"
     },
     "nsis": {

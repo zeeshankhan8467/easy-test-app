@@ -14,6 +14,8 @@ let questionTimerSec = 0;
 let timerInterval = null;
 let syncInterval = null;
 let perQuestionSeconds = 30; // default; 0 = no auto-advance
+let nextQuestionTimeout = null; // for auto-advance when all submitted
+let revisable = false; // from snapshot: if true, students can change their answer (reattempt)
 
 const timerDisplay = document.getElementById('timerDisplay');
 const examTitle = document.getElementById('examTitle');
@@ -39,7 +41,7 @@ let participantNames = {}; // participantId -> name (for response list)
 
 function letterToIndex(letter) {
   const c = (letter || '').toString().toUpperCase().charAt(0);
-  if (c >= 'A' && c <= 'D') return c.charCodeAt(0) - 65;
+  if (c >= 'A' && c <= 'J') return c.charCodeAt(0) - 65;
   return 0;
 }
 
@@ -88,10 +90,16 @@ function loadExamFromStorage() {
     console.log(`[EasyTest Live] Q${i + 1} options count=${(q.options || []).length}`, q.options);
   });
   examTitle.textContent = snapshot.title || 'Exam';
+  revisable = !!(snapshot && (snapshot.revisable === true || snapshot.revisable === 'true'));
   participantNames = {};
   Object.values(clickerToParticipant).forEach(p => { if (p && p.id != null) participantNames[p.id] = p.name || 'Participant'; });
+  // Timer: backend sends duration per question in seconds (snapshot.duration) — show this value on the timer
   perQuestionSeconds = 30;
-  if (questions.length > 0) {
+  const durationSec = snapshot && (snapshot.duration != null) ? Number(snapshot.duration) : 0;
+  if (durationSec > 0) {
+    perQuestionSeconds = Math.max(1, Math.round(durationSec));
+    console.log('[EasyTest Live] Timer: duration per question =', perQuestionSeconds, 'sec (from backend)');
+  } else if (questions.length > 0) {
     const first = questions[0];
     const t = first.timeout;
     if (typeof t === 'number' && t > 0) perQuestionSeconds = t;
@@ -140,22 +148,25 @@ function renderQuestion() {
 
   if (questionNumber) questionNumber.textContent = `Q${currentIndex + 1}`;
   if (questionTypeEl) questionTypeEl.textContent = (q.type || 'MCQ').toUpperCase();
-  if (questionText) questionText.textContent = q.text || '—';
+  if (questionText) questionText.textContent = stripHtml(q.text || '—');
 
-  // Option display: "alpha" -> A,B,C,...; "numeric" -> 1,2,3,... (from API, or infer if options are numeric)
-  let optionDisplay = (q.option_display || (snapshot && snapshot.option_display) || '').toString().toLowerCase();
+  // Option display is per-question: use this question's option_display, then exam-level default
+  const rawOptionDisplay = (q.option_display != null && q.option_display !== '')
+    ? q.option_display
+    : (snapshot && snapshot.option_display != null ? snapshot.option_display : '');
+  let optionDisplay = String(rawOptionDisplay).toLowerCase().trim();
   if (optionDisplay !== 'numeric' && optionDisplay !== 'alpha' && opts && opts.length > 0) {
     const allNumeric = opts.every(o => /^\d+$/.test(String(o).trim()));
-    if (allNumeric) optionDisplay = 'numeric';
-    else optionDisplay = 'alpha';
+    optionDisplay = allNumeric ? 'numeric' : 'alpha';
   }
   if (optionDisplay !== 'numeric') optionDisplay = 'alpha';
+  const useNumericLabels = optionDisplay === 'numeric';
   const n = optionCount;
-  // Build labels for all options: numeric 1..N or alpha A,B,C,...,Z, then 27,28,...
+  // Build labels: numeric -> 1,2,3,4; alpha -> A,B,C,D
   const optionKeys = [];
-  const alphaKeys = [];
+  const alphaKeys = []; // always A,B,C,D for mapping clicker responses
   for (let i = 0; i < n; i++) {
-    optionKeys.push(optionDisplay === 'numeric' ? String(i + 1) : (i < 26 ? String.fromCharCode(65 + i) : String(i + 1)));
+    optionKeys.push(useNumericLabels ? String(i + 1) : (i < 26 ? String.fromCharCode(65 + i) : String(i + 1)));
     alphaKeys.push(i < 26 ? String.fromCharCode(65 + i) : String(i + 1));
   }
 
@@ -167,7 +178,8 @@ function renderQuestion() {
   const totalResponses = Object.keys(responses).length || 1;
 
   optionsList.innerHTML = optionKeys.map((key, idx) => {
-    const label = (opts && opts[idx] != null) ? (typeof opts[idx] === 'string' ? opts[idx] : (opts[idx].text || opts[idx].label || key)) : key;
+    const rawLabel = (opts && opts[idx] != null) ? (typeof opts[idx] === 'string' ? opts[idx] : (opts[idx].text || opts[idx].label || key)) : key;
+    const label = stripHtml(String(rawLabel)) || key;
     const count = counts[alphaKeys[idx]] || 0;
     const pct = Math.round((count / totalResponses) * 100);
     return `
@@ -229,6 +241,16 @@ function escapeHtml(s) {
   const div = document.createElement('div');
   div.textContent = s;
   return div.innerHTML;
+}
+
+/** Strip HTML tags and return plain text (so <p>, <strong>, etc. are not shown). */
+function stripHtml(html) {
+  if (html == null) return '';
+  const str = String(html).trim();
+  if (!str) return '';
+  const div = document.createElement('div');
+  div.innerHTML = str;
+  return (div.textContent || div.innerText || '').trim();
 }
 
 function updateResponsesUI() {
@@ -310,12 +332,16 @@ function buildSyncPayload() {
       }
     });
   });
+  // Include ALL loaded participants in attendance (so absent ones also get assigned to the exam)
+  Object.values(clickerToParticipant).forEach(p => {
+    if (p && p.id != null) attendanceSet.add(p.id);
+  });
   const byParticipant = responsesList.filter(r => r.participant_id != null).length;
   const byClickerId = responsesList.filter(r => r.clicker_id != null).length;
-  if (responsesList.length) {
-    console.log('[EasyTest Live] buildSyncPayload:', responsesList.length, 'total (by participant_id:', byParticipant, ', by clicker_id:', byClickerId, ')');
+  if (responsesList.length || attendanceSet.size) {
+    console.log('[EasyTest Live] buildSyncPayload:', responsesList.length, 'total (by participant_id:', byParticipant, ', by clicker_id:', byClickerId, '), attendance:', attendanceSet.size);
   }
-  return { responses: responsesList, attendance: Array.from(attendanceSet) };
+  return { responses: responsesList, attendance: Array.from(attendanceSet), exam_started_at: examStartedAt || undefined };
 }
 
 /**
@@ -326,7 +352,7 @@ async function syncSingleResponse(payloadItem, attendanceIds) {
   const responses = [payloadItem];
   const attendance = Array.isArray(attendanceIds) ? attendanceIds : (payloadItem.participant_id != null ? [payloadItem.participant_id] : []);
   try {
-    const result = await window.electronAPI.syncLiveResults({ examId, responses, attendance });
+    const result = await window.electronAPI.syncLiveResults({ examId, responses, attendance, exam_started_at: examStartedAt || undefined });
     if (result.success) {
       if (syncStatus) syncStatus.textContent = 'Saved.';
       const names = result.data?.participant_names;
@@ -351,7 +377,7 @@ async function runSync() {
   }
   console.log('[EasyTest Live] runSync: sending', payload.responses.length, 'responses,', payload.attendance.length, 'attendance for exam', examId);
   syncStatus.textContent = 'Syncing...';
-  const result = await window.electronAPI.syncLiveResults({ examId, responses: payload.responses, attendance: payload.attendance });
+  const result = await window.electronAPI.syncLiveResults({ examId, responses: payload.responses, attendance: payload.attendance, exam_started_at: payload.exam_started_at });
   if (result.success) {
     const synced = result.data?.synced ?? 0;
     syncStatus.textContent = `Synced ${synced} responses.`;
@@ -377,11 +403,12 @@ async function runSync() {
 function onClickerResponse(data) {
   if (examState !== 'running' && examState !== 'paused') return;
   const answer = (data.answer || '').toUpperCase().charAt(0);
-  if (!['A', 'B', 'C', 'D'].includes(answer)) return;
+  if (!(answer >= 'A' && answer <= 'J')) return;
 
-  // SDK sends clicker_id = keyId (1-4, the key pressed); keySN = device serial (may be empty from some DLLs).
+  // SDK sends clicker_id = keyId (1-9); keySN = device serial (may be empty from some DLLs).
   const keySN = (data.keySN != null && String(data.keySN).trim() !== '') ? String(data.keySN).trim() : '';
-  const deviceId = keySN || ('d' + (data.clicker_id != null ? data.clicker_id : '') + '_' + (data.timestamp || Date.now()));
+  // Stable device id so we accept only one response per device per question (no timestamp in key)
+  const deviceId = keySN || ('d' + (data.baseId ?? 0) + '_' + (data.clicker_id ?? data.keyId ?? '0'));
   const participant =
     clickerToParticipant[keySN] ||
     clickerToParticipant[deviceId] ||
@@ -390,24 +417,27 @@ function onClickerResponse(data) {
 
   console.log('[EasyTest Live] Response received: clicker_id=' + data.clicker_id + ', keySN="' + keySN + '", deviceId="' + deviceId + '", matched=' + (participant ? (participant.name + ' (id=' + participant.id + ')') : 'none') + ', map keys=' + Object.keys(clickerToParticipant).join(','));
 
-  // One response per device per question (use deviceId so we don't duplicate)
-  if (responses[deviceId]) return;
+  // Only accept responses from clickers assigned to a participant (student). Ignore unassigned clickers.
+  if (!participant) {
+    console.log('[EasyTest Live] Ignoring response: clicker not assigned to any student. Assign Clicker ID in the web app (Participants) then try again.');
+    return;
+  }
+
+  // When revisable is false: one response per device per question. When revisable is true: allow reattempt (overwrite).
+  if (!revisable && responses[deviceId]) return;
 
   const timestamp = data.timestamp || Date.now();
-  const displayName = participant ? participant.name : 'Student';
-
   const record = {
     answer,
-    participantId: participant ? participant.id : null,
-    name: displayName,
+    participantId: participant.id,
+    name: participant.name,
     timestamp,
     keySN: keySN || undefined,
     deviceId,
   };
   responses[deviceId] = record;
 
-  // Store for sync: always store every response so we never get "nothing to sync"
-  // Matched: by participantId. Unmatched: by 'k:'+keySN or 'd:'+deviceId (when keySN empty)
+  // Store for sync. When revisable: always update and sync so backend gets latest answer.
   if (!allResponsesByQuestion[currentIndex]) allResponsesByQuestion[currentIndex] = {};
   const q = questions[currentIndex];
   const questionId = q && q.question_id != null ? q.question_id : null;
@@ -418,37 +448,34 @@ function onClickerResponse(data) {
     answered_at: answeredAt,
   } : null;
 
-  if (participant) {
-    const participantId = participant.id;
-    if (!allResponsesByQuestion[currentIndex][participantId]) {
-      allResponsesByQuestion[currentIndex][participantId] = { answer, timestamp };
-      persistPending();
-      if (payloadItem) {
-        const item = { ...payloadItem, participant_id: participantId };
-        syncSingleResponse(item, [participantId]);
-      }
-    }
-  } else {
-    const syncKey = keySN ? 'k:' + keySN : 'd:' + deviceId;
-    const clickerIdForBackend = keySN || deviceId;
-    if (!allResponsesByQuestion[currentIndex][syncKey]) {
-      allResponsesByQuestion[currentIndex][syncKey] = { answer, timestamp, keySN: keySN || undefined, deviceId, clickerIdForBackend };
-      persistPending();
-      if (payloadItem) {
-        const item = { ...payloadItem, clicker_id: String(clickerIdForBackend) };
-        syncSingleResponse(item, []);
-      }
-      console.log('[EasyTest Live] Unmatched clicker: keySN=' + (keySN || '(empty)') + ', deviceId=' + deviceId + '. To save to backend set participant Clicker ID to "' + clickerIdForBackend + '" in web app.');
+  const participantId = participant.id;
+  const alreadyHad = !!allResponsesByQuestion[currentIndex][participantId];
+  allResponsesByQuestion[currentIndex][participantId] = { answer, timestamp };
+  if (revisable || !alreadyHad) {
+    persistPending();
+    if (payloadItem) {
+      const item = { ...payloadItem, participant_id: participantId };
+      syncSingleResponse(item, [participantId]);
     }
   }
 
   updateResponsesUI();
   renderQuestion();
+
+  // Auto-advance to next question when all participants have submitted (no OK button needed)
+  const totalParticipants = Object.keys(clickerToParticipant).length;
+  if (examState === 'running' && totalParticipants > 0 && Object.keys(responses).length >= totalParticipants) {
+    if (nextQuestionTimeout) clearTimeout(nextQuestionTimeout);
+    nextQuestionTimeout = setTimeout(() => {
+      nextQuestionTimeout = null;
+      nextQuestion();
+    }, 1500);
+  }
 }
 
-function startTimer() {
-  if (perQuestionSeconds <= 0) return;
-  questionTimerSec = perQuestionSeconds;
+function startTimer(resume) {
+  if (perQuestionSeconds <= 0 && !resume) return;
+  if (!resume) questionTimerSec = perQuestionSeconds;
   timerDisplay.textContent = `${String(Math.floor(questionTimerSec / 60)).padStart(2, '0')}:${String(questionTimerSec % 60).padStart(2, '0')}`;
   timerDisplay.classList.remove('warning', 'danger');
   if (timerInterval) clearInterval(timerInterval);
@@ -472,11 +499,20 @@ function stopTimer() {
     clearInterval(timerInterval);
     timerInterval = null;
   }
+  // Do not reset questionTimerSec or display here - allows resume to continue from same time
+}
+
+function resetTimerDisplay() {
+  questionTimerSec = 0;
   timerDisplay.textContent = '00:00';
   timerDisplay.classList.remove('warning', 'danger');
 }
 
 function nextQuestion() {
+  if (nextQuestionTimeout) {
+    clearTimeout(nextQuestionTimeout);
+    nextQuestionTimeout = null;
+  }
   stopTimer();
   if (questions.length === 0 || currentIndex >= questions.length - 1) {
     endExam();
@@ -505,7 +541,7 @@ function nextQuestion() {
   renderQuestion();
   renderQuestionNav();
   updateResponsesUI();
-  if (examState === 'running') startTimer();
+  if (examState === 'running') startTimer(false);
 }
 
 async function startExam() {
@@ -527,19 +563,20 @@ async function startExam() {
     await new Promise(r => setTimeout(r, 2000));
   }
 
-  // Same session start settings as acadally-electron-app (session.js)
+  const maxOptionCount = Math.min(10, Math.max(4, ...questions.map(q => (Array.isArray(q.options) ? q.options.length : 0))));
   const startResult = await window.electronAPI.startSession({
     baseId: 0,
     voteType: 10,   // Multiple Choice
-    optionCount: 4, // A, B, C, D
+    optionCount: maxOptionCount,
     timeout: 0,     // no timeout; main process uses || 30 so SDK gets 30 (clicker stays active, not blank)
     minSelect: 1,
     maxSelect: 1,
-    submitMode: 0,  // Auto submit
+    submitMode: 1,  // 1 = no OK on clicker (config.json clickerSubmitMode overrides)
     displayMode: 0,
   });
   if (!startResult.success) console.warn('SDK startSession:', startResult.error);
 
+  examStartedAt = new Date().toISOString(); // so backend can compute time_taken from exam start
   examState = 'running';
   startBtn.classList.add('hidden');
   pauseBtn.classList.remove('hidden');
@@ -552,7 +589,7 @@ async function startExam() {
     sessionStatusEl.className = 'status-badge status-connected';
     sessionStatusEl.innerHTML = '<span class="status-dot"></span><span>Active</span>';
   }
-  startTimer();
+  startTimer(false);
   // Background sync every 30s
   if (syncInterval) clearInterval(syncInterval);
   syncInterval = setInterval(() => runSync(), 30000);
@@ -578,13 +615,19 @@ function resumeExam() {
     sessionStatusEl.className = 'status-badge status-connected';
     sessionStatusEl.innerHTML = '<span class="status-dot"></span><span>Active</span>';
   }
-  window.electronAPI.startSession({ baseId: 0, voteType: 10, optionCount: 4, timeout: 0, minSelect: 1, maxSelect: 1, submitMode: 0, displayMode: 0 }); // same as acadally
-  startTimer();
+  const maxOptionCount = Math.min(10, Math.max(4, ...questions.map(q => (Array.isArray(q.options) ? q.options.length : 0))));
+  window.electronAPI.startSession({ baseId: 0, voteType: 10, optionCount: maxOptionCount, timeout: 0, minSelect: 1, maxSelect: 1, submitMode: 1, displayMode: 0 });
+  startTimer(true); // continue from remaining time, do not reset
 }
 
 async function endExam() {
   examState = 'ended';
   stopTimer();
+  resetTimerDisplay();
+  if (nextQuestionTimeout) {
+    clearTimeout(nextQuestionTimeout);
+    nextQuestionTimeout = null;
+  }
   if (syncInterval) clearInterval(syncInterval);
   syncInterval = null;
   // Save to local storage first so we don't lose data if sync fails
@@ -600,6 +643,24 @@ async function endExam() {
   }
   // Explicitly submit responses when session ends
   if (syncStatus) syncStatus.textContent = 'Submitting responses...';
+  const payload = buildSyncPayload();
+  console.log('========== [EasyTest Live] EXAM END – data sent to backend ==========');
+  console.log('[EasyTest Live] Exam ID:', examId, '| Responses count:', payload.responses.length, '| Attendance count:', payload.attendance.length);
+  if (payload.responses.length > 0) {
+    payload.responses.forEach((r, i) => {
+      console.log('[EasyTest Live] Response[' + i + ']:', {
+        question_id: r.question_id,
+        selected_answer: r.selected_answer,
+        answered_at: r.answered_at,
+        participant_id: r.participant_id ?? '(none)',
+        clicker_id: r.clicker_id ?? '(none)',
+      });
+    });
+    console.log('[EasyTest Live] Time data: each response includes answered_at (ISO) – backend uses this to compute time_taken per question.');
+  } else {
+    console.log('[EasyTest Live] No responses to send.');
+  }
+  console.log('================================================================');
   const synced = await runSync();
   if (!synced && syncStatus && !(syncStatus.textContent || '').includes('Nothing to sync')) {
     alert('Could not submit responses to server. Data is saved locally. Try syncing again from the dashboard or check your connection.');
@@ -643,8 +704,27 @@ window.electronAPI.onConnectEvent((data) => {
   }
 });
 
+function setInitialConnectionStatus() {
+  window.electronAPI.getSDKStatus().then((s) => {
+    if (!connectionStatus) return;
+    if (s.connected) {
+      connectionStatus.textContent = 'Clicker connected';
+      connectionStatus.classList.remove('disconnected');
+      connectionStatus.classList.add('connected');
+    } else {
+      connectionStatus.textContent = 'Clicker disconnected';
+      connectionStatus.classList.remove('connected');
+      connectionStatus.classList.add('disconnected');
+    }
+  });
+}
+
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', loadExamFromStorage);
+  document.addEventListener('DOMContentLoaded', () => {
+    loadExamFromStorage();
+    setInitialConnectionStatus();
+  });
 } else {
   loadExamFromStorage();
+  setInitialConnectionStatus();
 }

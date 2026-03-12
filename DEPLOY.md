@@ -29,22 +29,35 @@ The app cannot reach the API server. Fix either **network/server** or **API URL*
 
 ---
 
-### 2. Override API URL without rebuilding (config file)
+### 2. Override API URL and clicker submit mode (config file)
 
-You can point the app to a different API without changing code or env:
+You can change the API URL and clicker submit mode without changing code.
 
-1. Find the app’s **user data** folder:
-   - Windows: `%APPDATA%\easytest-live\` (or your app name)
-   - macOS: `~/Library/Application Support/easytest-live/`
-2. Create or edit `config.json` in that folder:
+**Config file location:**  
+On first run the app may create a default `config.json` if it doesn’t exist. To open it:
+
+- **Windows:** Press `Win + R`, type `%APPDATA%\easytest-live`, press Enter. Open (or create) `config.json` in that folder.  
+  Full path example: `C:\Users\YourName\AppData\Roaming\easytest-live\config.json`
+- **macOS:** `~/Library/Application Support/easytest-live/config.json`
+
+When you start the app, the console also prints: `Config file path: ...` so you can copy that path.
+
+1. Create or edit `config.json` in that folder:
 
 ```json
 {
-  "apiUrl": "http://169.144.18.139/api/"
+  "apiUrl": "http://169.144.18.139/api/",
+  "clickerSubmitMode": 1
 }
 ```
 
-Use your real API base URL (with trailing slash). Examples:
+- **apiUrl** – Use your real API base URL (with trailing slash).
+- **clickerSubmitMode** (optional) – If you have to press OK on the clicker after choosing A/B/C/D, try: `0`, then `1`, then `2`. Restart the app after each change.
+- **clickerDisplayMode** (optional) – Try `1` (instead of default `0`) if changing submitMode didn’t remove the OK step. On some devices this affects when the response is sent.
+
+**If the clicker still requires OK** after trying different `clickerSubmitMode` and `clickerDisplayMode` values, the app also calls the SDK **WriteHDParam(Keypad_Config=17)** with **SubmisMode=0** before each session (see console for `WriteHDParam(Keypad_Config=17)`). If it still asks for OK, the behaviour may be fixed in the **base station or clicker firmware**. Check the SunVote / EasyTest manual for “instant submit” or “confirm off”.
+
+Examples:
 
 - Same machine: `"apiUrl": "http://127.0.0.1:8000/api/"`
 - Server on port 80: `"apiUrl": "http://169.144.18.139/api/"`
