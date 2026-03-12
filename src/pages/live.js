@@ -405,6 +405,15 @@ function onClickerResponse(data) {
   const answer = (data.answer || '').toUpperCase().charAt(0);
   if (!(answer >= 'A' && answer <= 'J')) return;
 
+  // Do not accept answers beyond the number of options for the current question.
+  // Example: if question has 4 options (A–D), ignore E, F, ...
+  const optionCountForQuestion = getCurrentQuestionOptionCount();
+  const answerIndex = answer.charCodeAt(0) - 65; // A=0, B=1, ...
+  if (answerIndex < 0 || answerIndex >= optionCountForQuestion) {
+    console.log('[EasyTest Live] Ignoring response: answer', answer, 'is beyond option count', optionCountForQuestion, 'for current question.');
+    return;
+  }
+
   // SDK sends clicker_id = keyId (1-9); keySN = device serial (may be empty from some DLLs).
   const keySN = (data.keySN != null && String(data.keySN).trim() !== '') ? String(data.keySN).trim() : '';
   // Stable device id so we accept only one response per device per question (no timestamp in key)
@@ -514,6 +523,8 @@ function nextQuestion() {
     nextQuestionTimeout = null;
   }
   stopTimer();
+  // End clicker session for the current question before moving on
+  window.electronAPI.stopSession(0);
   if (questions.length === 0 || currentIndex >= questions.length - 1) {
     endExam();
     return;
@@ -541,7 +552,38 @@ function nextQuestion() {
   renderQuestion();
   renderQuestionNav();
   updateResponsesUI();
-  if (examState === 'running') startTimer(false);
+  // Start a fresh clicker session for the new current question
+  if (examState === 'running') {
+    startClickerSessionForCurrentQuestion();
+    startTimer(false);
+  }
+}
+
+// Get option count for the current question (what is shown on screen).
+function getCurrentQuestionOptionCount() {
+  if (!questions.length || currentIndex < 0 || currentIndex >= questions.length) return 4;
+  const q = questions[currentIndex];
+  const opts = Array.isArray(q.options) ? q.options : [];
+  const n = opts.length || 0;
+  // Clicker supports 4–10 options; keep within that range
+  return Math.min(10, Math.max(4, n || 4));
+}
+
+// Start a clicker session for the question currently shown on screen.
+async function startClickerSessionForCurrentQuestion() {
+  const optionCount = getCurrentQuestionOptionCount();
+  const result = await window.electronAPI.startSession({
+    baseId: 0,
+    voteType: 10,   // Multiple Choice
+    optionCount,
+    timeout: 0,     // no timeout; main process uses || 30 so SDK gets 30
+    minSelect: 1,
+    maxSelect: 1,
+    submitMode: 1,
+    displayMode: 0,
+  });
+  if (!result.success) console.warn('[EasyTest Live] startSession (current question):', result.error);
+  return result;
 }
 
 async function startExam() {
@@ -563,17 +605,8 @@ async function startExam() {
     await new Promise(r => setTimeout(r, 2000));
   }
 
-  const maxOptionCount = Math.min(10, Math.max(4, ...questions.map(q => (Array.isArray(q.options) ? q.options.length : 0))));
-  const startResult = await window.electronAPI.startSession({
-    baseId: 0,
-    voteType: 10,   // Multiple Choice
-    optionCount: maxOptionCount,
-    timeout: 0,     // no timeout; main process uses || 30 so SDK gets 30 (clicker stays active, not blank)
-    minSelect: 1,
-    maxSelect: 1,
-    submitMode: 1,  // 1 = no OK on clicker (config.json clickerSubmitMode overrides)
-    displayMode: 0,
-  });
+  // Start clicker session for the question currently shown (currentIndex)
+  const startResult = await startClickerSessionForCurrentQuestion();
   if (!startResult.success) console.warn('SDK startSession:', startResult.error);
 
   examStartedAt = new Date().toISOString(); // so backend can compute time_taken from exam start
@@ -615,8 +648,8 @@ function resumeExam() {
     sessionStatusEl.className = 'status-badge status-connected';
     sessionStatusEl.innerHTML = '<span class="status-dot"></span><span>Active</span>';
   }
-  const maxOptionCount = Math.min(10, Math.max(4, ...questions.map(q => (Array.isArray(q.options) ? q.options.length : 0))));
-  window.electronAPI.startSession({ baseId: 0, voteType: 10, optionCount: maxOptionCount, timeout: 0, minSelect: 1, maxSelect: 1, submitMode: 1, displayMode: 0 });
+  // Resume clicker session for the question currently shown
+  startClickerSessionForCurrentQuestion();
   startTimer(true); // continue from remaining time, do not reset
 }
 
