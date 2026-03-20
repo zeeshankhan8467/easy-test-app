@@ -638,6 +638,7 @@ ipcMain.handle('sdk:startSession', async (event, settings = {}) => {
     }
     console.log('============================================================');
     log('VoteStart2', { baseId, voteType, setting: settingStr, submitMode, fromConfig: cfg.clickerSubmitMode });
+
     const result = sdk.VoteStart2(baseId, voteType, settingStr);
     return { success: result >= 0, result, message: result >= 0 ? 'Session started' : 'Failed to start session' };
   } catch (e) { return { success: false, error: e.message }; }
