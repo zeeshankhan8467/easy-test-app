@@ -66,7 +66,9 @@ async function loadExams() {
     return;
   }
 
-  const exams = (examsResult.data || []).filter(e => e.status === 'frozen');
+  // Show all exams from API. Previously we only showed status==='frozen', which hid draft exams
+  // even though the list API returned them (see main process logs).
+  const exams = examsResult.data || [];
   const totalStudents = Array.isArray(participantsResult?.data) ? participantsResult.data.length : 0;
   if (exams.length === 0) {
     noExamsEl.classList.remove('hidden');
@@ -74,17 +76,38 @@ async function loadExams() {
     return;
   }
   noExamsEl.classList.add('hidden');
+
+  function examSyncReady(exam) {
+    const s = exam.status;
+    return s === 'frozen' || s === 'completed' || exam.frozen === true;
+  }
+
+  function statusBadge(exam) {
+    const s = exam.status || 'draft';
+    if (s === 'frozen' || exam.frozen) {
+      return '<span class="status-badge status-frozen">Frozen</span>';
+    }
+    if (s === 'completed') {
+      return '<span class="status-badge status-completed">Completed</span>';
+    }
+    return '<span class="status-badge status-draft">Draft</span>';
+  }
+
   examListEl.innerHTML = exams.map(exam => {
     const enrolled = exam.participant_count ?? 0;
     const displayCount = enrolled > 0 ? enrolled : totalStudents;
+    const syncNote = examSyncReady(exam)
+      ? ''
+      : '<div class="exam-warn">Freeze this exam in the EasyTest web app so clicker results can sync to the server.</div>';
     return `
     <div class="exam-item" data-exam-id="${exam.id}">
       <div>
         <h3>${escapeHtml(exam.title)}</h3>
         <div class="meta">Questions: ${exam.question_count ?? 0} · Participants: ${displayCount}</div>
+        ${syncNote}
       </div>
       <div class="actions">
-        <span class="status-badge status-frozen">Frozen</span>
+        ${statusBadge(exam)}
         <button type="button" class="btn btn-secondary attendance-btn" data-exam-id="${exam.id}" data-exam-title="${escapeHtml(exam.title)}">Take attendance</button>
         <button type="button" class="btn btn-primary run-exam-btn" data-exam-id="${exam.id}">Run exam</button>
       </div>

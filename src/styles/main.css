@@ -194,6 +194,15 @@ body {
   font-weight: 500;
 }
 .status-frozen { background: rgba(74, 222, 128, 0.2); color: var(--success); }
+.status-draft { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
+.status-completed { background: rgba(96, 165, 250, 0.2); color: #60a5fa; }
+
+.exam-warn {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--muted, #94a3b8);
+  max-width: 36rem;
+}
 .status-draft { background: rgba(160,160,160,0.2); color: var(--text-muted); }
 .no-exams { color: var(--text-muted); text-align: center; padding: 3rem; }
 
@@ -302,6 +311,27 @@ body {
 .timer-display.warning { color: var(--warning); }
 .timer-display.danger { color: var(--danger); }
 .control-buttons { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.live-mode-hint {
+  flex: 1 1 100%;
+  margin: 0;
+  padding-top: 0.15rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.responses-panel-sub {
+  margin: -0.25rem 0 0.5rem 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+.option-item-stats-hidden .option-bar-fill {
+  opacity: 0.25;
+  width: 0 !important;
+}
+.option-item-stats-hidden .option-count {
+  color: var(--text-muted);
+}
 .btn-danger { background: var(--danger); color: #fff; }
 .btn-danger:hover:not(:disabled) { opacity: 0.9; }
 

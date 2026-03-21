@@ -16,6 +16,13 @@ let syncInterval = null;
 let perQuestionSeconds = 30; // default; 0 = no auto-advance
 let nextQuestionTimeout = null; // for auto-advance when all submitted
 let revisable = false; // from snapshot: if true, students can change their answer (reattempt)
+let examStartedAt = null;
+/** From snapshot: show option breakdown / answers as they arrive */
+let showLiveResponse = false;
+/** From snapshot: when show_live_response is false, reveal breakdown after all students submit per question */
+let showResponseAfterCompletion = true;
+/** From snapshot: auto-advance question when time is up or all answered; false = teacher uses Next */
+let questionChangeAutomatic = false;
 
 const timerDisplay = document.getElementById('timerDisplay');
 const examTitle = document.getElementById('examTitle');
@@ -37,7 +44,69 @@ const questionTypeEl = document.getElementById('questionType');
 const optionsList = document.getElementById('optionsList');
 const questionNavEl = document.getElementById('questionNav');
 const sessionStatusEl = document.getElementById('sessionStatus');
+const liveModeHintEl = document.getElementById('liveModeHint');
+const responsesPanelSubEl = document.getElementById('responsesPanelSub');
 let participantNames = {}; // participantId -> name (for response list)
+
+function snapshotBool(val, defaultVal) {
+  if (val === true || val === 'true' || val === 1 || val === '1') return true;
+  if (val === false || val === 'false' || val === 0 || val === '0') return false;
+  return defaultVal;
+}
+
+function totalParticipantCount() {
+  return Object.keys(clickerToParticipant).length || 0;
+}
+
+/** All mapped students have submitted for question index qIdx */
+function allStudentsAnsweredForQuestionIndex(qIdx) {
+  const total = totalParticipantCount();
+  if (total <= 0) return false;
+  const map = allResponsesByQuestion[qIdx];
+  if (!map || typeof map !== 'object') return false;
+  return Object.keys(map).length >= total;
+}
+
+/** Show option bars / per-option % and student answer letters */
+function shouldRevealOptionStatsForQuestionIndex(qIdx) {
+  if (examState === 'ended') return true;
+  if (showLiveResponse) return true;
+  if (showResponseAfterCompletion && allStudentsAnsweredForQuestionIndex(qIdx)) return true;
+  return false;
+}
+
+function updateLiveModeHints() {
+  if (liveModeHintEl) {
+    const parts = [];
+    if (showLiveResponse) {
+      parts.push('Option breakdown updates live as students answer.');
+    } else if (showResponseAfterCompletion) {
+      parts.push('Option breakdown appears after every student has submitted on this question.');
+    } else {
+      parts.push('Option breakdown stays hidden until the exam ends.');
+    }
+    if (questionChangeAutomatic) {
+      parts.push('Questions advance automatically when the timer ends or everyone has answered.');
+    } else {
+      parts.push('Use Next to go to the next question (no auto-advance).');
+    }
+    liveModeHintEl.textContent = parts.join(' ');
+  }
+  if (responsesPanelSubEl) {
+    if (showLiveResponse) {
+      responsesPanelSubEl.textContent = 'Showing selected options as they arrive.';
+    } else if (showResponseAfterCompletion) {
+      responsesPanelSubEl.textContent = 'Selected options shown after all students submit (this question).';
+    } else {
+      responsesPanelSubEl.textContent = 'Selected options hidden until the exam ends.';
+    }
+  }
+  if (nextBtn) {
+    nextBtn.title = questionChangeAutomatic
+      ? 'Move to next question (also happens automatically when everyone answers or time runs out).'
+      : 'Move to next question — required when auto question change is off.';
+  }
+}
 
 function letterToIndex(letter) {
   const c = (letter || '').toString().toUpperCase().charAt(0);
@@ -91,6 +160,10 @@ function loadExamFromStorage() {
   });
   examTitle.textContent = snapshot.title || 'Exam';
   revisable = !!(snapshot && (snapshot.revisable === true || snapshot.revisable === 'true'));
+  showLiveResponse = snapshotBool(snapshot.show_live_response, false);
+  showResponseAfterCompletion = snapshotBool(snapshot.show_response_after_completion, true);
+  questionChangeAutomatic = snapshotBool(snapshot.question_change_automatic, false);
+  updateLiveModeHints();
   participantNames = {};
   Object.values(clickerToParticipant).forEach(p => { if (p && p.id != null) participantNames[p.id] = p.name || 'Participant'; });
   // Timer: backend sends duration per question in seconds (snapshot.duration) — show this value on the timer
@@ -170,6 +243,7 @@ function renderQuestion() {
     alphaKeys.push(i < 26 ? String.fromCharCode(65 + i) : String(i + 1));
   }
 
+  const revealStats = shouldRevealOptionStatsForQuestionIndex(currentIndex);
   const counts = {};
   alphaKeys.forEach(k => { counts[k] = 0; });
   Object.values(responses).forEach(r => {
@@ -180,16 +254,17 @@ function renderQuestion() {
   optionsList.innerHTML = optionKeys.map((key, idx) => {
     const rawLabel = (opts && opts[idx] != null) ? (typeof opts[idx] === 'string' ? opts[idx] : (opts[idx].text || opts[idx].label || key)) : key;
     const label = stripHtml(String(rawLabel)) || key;
-    const count = counts[alphaKeys[idx]] || 0;
-    const pct = Math.round((count / totalResponses) * 100);
+    const count = revealStats ? (counts[alphaKeys[idx]] || 0) : 0;
+    const pct = revealStats && totalResponses > 0 ? Math.round((count / totalResponses) * 100) : 0;
+    const mutedClass = revealStats ? '' : ' option-item-stats-hidden';
     return `
-      <div class="option-item">
+      <div class="option-item${mutedClass}">
         <div class="option-key">${optionKeys[idx]}</div>
         <div class="option-content">
           <div class="option-text-row">${escapeHtml(label)}</div>
           <div class="option-bar"><div class="option-bar-fill" style="width:${pct}%"></div></div>
         </div>
-        <div class="option-count">${pct}%</div>
+        <div class="option-count">${revealStats ? pct + '%' : '—'}</div>
       </div>
     `;
   }).join('');
@@ -266,17 +341,22 @@ function updateResponsesUI() {
     responsesListEl.innerHTML = '<div class="responses-placeholder">' + (examState === 'running' || examState === 'paused' ? 'Waiting for responses...' : 'No responses yet') + '</div>';
     return;
   }
+  const revealAnswers = shouldRevealOptionStatsForQuestionIndex(currentIndex);
   const sorted = Object.entries(responses).sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0));
   responsesListEl.innerHTML = sorted.map(([, data]) => {
     const name = data.name || (data.participantId != null && (participantNames[data.participantId] || participantNames[String(data.participantId)])) || 'Student';
     const initials = name.split(/\s+/).map(n => n[0]).join('').toUpperCase().substring(0, 2) || '?';
+    const ans = (data.answer || '').toString().toUpperCase().charAt(0);
+    const answerHtml = revealAnswers && ans >= 'A' && ans <= 'J'
+      ? `<span class="response-answer">${escapeHtml(ans)}</span>`
+      : '<span class="response-answer pending">Submitted</span>';
     return `
       <div class="response-item">
         <div class="response-student">
           <div class="response-avatar">${escapeHtml(initials)}</div>
           <span>${escapeHtml(name)}</span>
         </div>
-        <span class="response-answer pending">Submitted</span>
+        ${answerHtml}
       </div>
     `;
   }).join('');
@@ -471,9 +551,14 @@ function onClickerResponse(data) {
   updateResponsesUI();
   renderQuestion();
 
-  // Auto-advance to next question when all participants have submitted (no OK button needed)
-  const totalParticipants = Object.keys(clickerToParticipant).length;
-  if (examState === 'running' && totalParticipants > 0 && Object.keys(responses).length >= totalParticipants) {
+  // Auto-advance when everyone answered (only if exam setting allows automatic question change)
+  const totalParticipants = totalParticipantCount();
+  if (
+    questionChangeAutomatic &&
+    examState === 'running' &&
+    totalParticipants > 0 &&
+    Object.keys(responses).length >= totalParticipants
+  ) {
     if (nextQuestionTimeout) clearTimeout(nextQuestionTimeout);
     nextQuestionTimeout = setTimeout(() => {
       nextQuestionTimeout = null;
@@ -498,7 +583,7 @@ function startTimer(resume) {
     if (questionTimerSec <= 0) {
       clearInterval(timerInterval);
       timerInterval = null;
-      nextQuestion();
+      if (questionChangeAutomatic) nextQuestion();
     }
   }, 1000);
 }
@@ -674,6 +759,9 @@ async function endExam() {
     sessionStatusEl.className = 'status-badge status-pending';
     sessionStatusEl.innerHTML = '<span class="status-dot"></span><span>Ended</span>';
   }
+  // Reveal full stats in teacher view after exam ends (respects ended branch in shouldRevealOptionStatsForQuestionIndex)
+  renderQuestion();
+  updateResponsesUI();
   // Explicitly submit responses when session ends
   if (syncStatus) syncStatus.textContent = 'Submitting responses...';
   const payload = buildSyncPayload();
