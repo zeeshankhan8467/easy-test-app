@@ -499,6 +499,29 @@ ipcMain.handle('api:fetchParticipants', async (event, examId) => {
   }
 });
 
+/** Save daily attendance (no exam): POST /attendance/day/save/ */
+ipcMain.handle('api:saveDailyAttendance', async (event, { date, entries }) => {
+  if (!getStore().token) return { success: false, error: 'Not authenticated' };
+  if (!date || typeof date !== 'string') return { success: false, error: 'Missing date (YYYY-MM-DD)' };
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return { success: false, error: 'No attendance entries to save' };
+  }
+  try {
+    const response = await makeRequest(`${getApiBaseUrl()}attendance/day/save/`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ date, entries }),
+    });
+    if (response.ok) {
+      return { success: true, data: response.data };
+    }
+    const msg = response.data?.error || response.data?.detail || 'Failed to save attendance';
+    return { success: false, error: typeof msg === 'string' ? msg : JSON.stringify(msg) };
+  } catch (e) {
+    return { success: false, error: e.message || 'Network error' };
+  }
+});
+
 ipcMain.handle('api:syncLiveResults', async (event, { examId, responses, attendance, exam_started_at }) => {
   if (!getStore().token) {
     console.log('[EasyTest Live] Sync skipped: not authenticated');

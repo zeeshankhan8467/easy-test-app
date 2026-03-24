@@ -16,16 +16,27 @@ const attendanceModalClose = document.getElementById('attendanceModalClose');
 const attendanceConnectBtn = document.getElementById('attendanceConnectBtn');
 const attendanceDoneBtn = document.getElementById('attendanceDoneBtn');
 const attendanceRunExamBtn = document.getElementById('attendanceRunExamBtn');
+const attendanceSubmitBtn = document.getElementById('attendanceSubmitBtn');
+const dailyAttendanceBtn = document.getElementById('dailyAttendanceBtn');
 
 let attendanceState = {
   active: false,
+  mode: 'daily',
   examId: null,
   examTitle: '',
+  dateStr: '',
   participants: [],
   clickerToParticipant: {},
   presentIds: new Set(),
   clickerListener: null,
 };
+
+function localISODate(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
 function isAuthError(result) {
   const err = (result && result.error) ? String(result.error) : '';
@@ -108,7 +119,6 @@ async function loadExams() {
       </div>
       <div class="actions">
         ${statusBadge(exam)}
-        <button type="button" class="btn btn-secondary attendance-btn" data-exam-id="${exam.id}" data-exam-title="${escapeHtml(exam.title)}">Take attendance</button>
         <button type="button" class="btn btn-primary run-exam-btn" data-exam-id="${exam.id}">Run exam</button>
       </div>
     </div>
@@ -117,9 +127,6 @@ async function loadExams() {
 
   examListEl.querySelectorAll('.run-exam-btn').forEach(btn => {
     btn.addEventListener('click', () => runExam(btn.dataset.examId));
-  });
-  examListEl.querySelectorAll('.attendance-btn').forEach(btn => {
-    btn.addEventListener('click', () => openAttendance(btn.dataset.examId, btn.dataset.examTitle || ''));
   });
 }
 
@@ -172,6 +179,18 @@ function updateBaseStationStatus(connected) {
   baseStationLabelEl.textContent = connected ? 'Base station: Connected' : 'Base station: Disconnected';
 }
 
+function attendanceRowVisual(p) {
+  const { presentIds } = attendanceState;
+  if (presentIds.has(p.id)) {
+    return { row: 'present', badge: 'badge-present', label: 'Present' };
+  }
+  const hasClicker = p.clicker_id != null && String(p.clicker_id).trim() !== '';
+  if (hasClicker) {
+    return { row: 'absent', badge: 'badge-absent', label: 'Absent' };
+  }
+  return { row: 'unmarked', badge: 'badge-noclicker', label: 'No clicker' };
+}
+
 function renderAttendanceList() {
   const { participants, presentIds } = attendanceState;
   const total = participants.length;
@@ -180,16 +199,16 @@ function renderAttendanceList() {
   if (attendanceModalPresent) attendanceModalPresent.textContent = present;
   if (!attendanceModalList) return;
   if (total === 0) {
-    attendanceModalList.innerHTML = '<div class="attendance-placeholder">No participants with clicker ID in this exam.</div>';
+    attendanceModalList.innerHTML = '<div class="attendance-placeholder">No participants in your roster.</div>';
     return;
   }
   const sorted = [...participants].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   attendanceModalList.innerHTML = sorted.map(p => {
-    const isPresent = presentIds.has(p.id);
+    const v = attendanceRowVisual(p);
     return `
-      <div class="attendance-modal-item ${isPresent ? 'present' : 'absent'}">
+      <div class="attendance-modal-item ${v.row}">
         <span class="attendance-name">${escapeHtml(p.name || 'Participant')}</span>
-        <span class="attendance-badge ${isPresent ? 'badge-present' : 'badge-absent'}">${isPresent ? 'Present' : 'Absent'}</span>
+        <span class="attendance-badge ${v.badge}">${escapeHtml(v.label)}</span>
       </div>
     `;
   }).join('');
@@ -208,13 +227,18 @@ function onAttendanceClickerResponse(data) {
   }
 }
 
-async function openAttendance(examId, examTitle) {
-  const examIdNum = parseInt(examId, 10);
-  const [partResult, allPartResult] = await Promise.all([
-    window.electronAPI.fetchParticipants(examIdNum),
-    window.electronAPI.fetchParticipants(null),
-  ]);
-  const allParticipants = allPartResult.success ? (allPartResult.data || []) : [];
+async function openDailyAttendance() {
+  const partResult = await window.electronAPI.fetchParticipants(null);
+  if (!partResult.success) {
+    if (isAuthError(partResult)) {
+      await window.electronAPI.nav('login');
+      return;
+    }
+    alert(partResult.error || 'Failed to load participants');
+    return;
+  }
+
+  const allParticipants = partResult.data || [];
   const clickerToParticipant = {};
   allParticipants.forEach(p => {
     if (p.clicker_id == null || p.clicker_id === '') return;
@@ -226,29 +250,37 @@ async function openAttendance(examId, examTitle) {
     if (!isNaN(num)) clickerToParticipant[num] = info;
   });
 
-  // Use all participants with a clicker ID for the attendance list (not just exam-enrolled),
-  // so we can take attendance even when the exam has no participants assigned yet.
   const uniqueParticipants = [];
   const seenIds = new Set();
   allParticipants.forEach(p => {
     if (!p || p.id == null) return;
-    if (!p.clicker_id || String(p.clicker_id).trim() === '') return;
     if (seenIds.has(p.id)) return;
     seenIds.add(p.id);
     uniqueParticipants.push(p);
   });
 
+  const dateStr = localISODate();
   attendanceState = {
     active: true,
-    examId: examIdNum,
-    examTitle: examTitle || 'Exam',
+    mode: 'daily',
+    examId: null,
+    examTitle: '',
+    dateStr,
     participants: uniqueParticipants,
     clickerToParticipant,
     presentIds: new Set(),
     clickerListener: null,
   };
 
-  if (attendanceModalTitle) attendanceModalTitle.textContent = 'Attendance – ' + (examTitle || 'Exam');
+  if (attendanceModalTitle) attendanceModalTitle.textContent = 'Attendance — ' + dateStr;
+  const hintEl = document.querySelector('.attendance-modal-hint');
+  if (hintEl) {
+    hintEl.textContent =
+      'Students with clickers press any key (A–D) to be marked present. Click Submit attendance to save today\'s roster to the server (no exam).';
+  }
+  if (attendanceSubmitBtn) attendanceSubmitBtn.classList.remove('hidden');
+  if (attendanceRunExamBtn) attendanceRunExamBtn.classList.add('hidden');
+
   renderAttendanceList();
   attendanceModal.classList.remove('hidden');
 
@@ -294,13 +326,64 @@ function closeAttendance(runExamAfter) {
   window.electronAPI.removeAllSDKListeners();
   attendanceState.active = false;
   attendanceState.examId = null;
+  attendanceState.dateStr = '';
+  attendanceState.mode = 'daily';
   if (attendanceModal) attendanceModal.classList.add('hidden');
+  if (attendanceSubmitBtn) {
+    attendanceSubmitBtn.classList.add('hidden');
+    attendanceSubmitBtn.disabled = false;
+  }
+  if (attendanceRunExamBtn) attendanceRunExamBtn.classList.remove('hidden');
+  const hintEl = document.querySelector('.attendance-modal-hint');
+  if (hintEl) {
+    hintEl.textContent = 'Students press any key (A–D) on their clicker to be marked present.';
+  }
   if (attendanceConnectBtn) {
     attendanceConnectBtn.textContent = 'Connect & start';
     attendanceConnectBtn.disabled = false;
   }
   if (runExamAfter && examIdToRun != null) {
     runExam(String(examIdToRun));
+  }
+}
+
+async function submitDailyAttendance() {
+  if (!attendanceState.active || attendanceState.mode !== 'daily' || !attendanceState.dateStr) return;
+  const parts = attendanceState.participants;
+  if (!parts.length) {
+    alert('No participants to save.');
+    return;
+  }
+  const entries = parts.map((p) => {
+    let status;
+    if (attendanceState.presentIds.has(p.id)) status = 'present';
+    else {
+      const hasClicker = p.clicker_id != null && String(p.clicker_id).trim() !== '';
+      status = hasClicker ? 'absent' : 'unmarked';
+    }
+    return { participant_id: p.id, status };
+  });
+
+  if (attendanceSubmitBtn) attendanceSubmitBtn.disabled = true;
+  try {
+    const res = await window.electronAPI.saveDailyAttendance({
+      date: attendanceState.dateStr,
+      entries,
+    });
+    if (!res.success) {
+      alert(res.error || 'Failed to save attendance');
+      return;
+    }
+    const saved = res.data && res.data.saved != null ? res.data.saved : entries.length;
+    const errs = res.data && res.data.errors;
+    if (errs && errs.length) console.warn('[EasyTest Live] Attendance save warnings:', errs);
+    alert(`Attendance saved for ${attendanceState.dateStr} (${saved} record(s)).`);
+    closeAttendance(false);
+    await loadStudents();
+  } catch (e) {
+    alert(e.message || 'Failed to save attendance');
+  } finally {
+    if (attendanceSubmitBtn) attendanceSubmitBtn.disabled = false;
   }
 }
 
@@ -366,6 +449,8 @@ if (attendanceModalBackdrop) attendanceModalBackdrop.addEventListener('click', (
 if (attendanceConnectBtn) attendanceConnectBtn.addEventListener('click', () => startAttendanceSession());
 if (attendanceDoneBtn) attendanceDoneBtn.addEventListener('click', () => closeAttendance(false));
 if (attendanceRunExamBtn) attendanceRunExamBtn.addEventListener('click', () => closeAttendance(true));
+if (attendanceSubmitBtn) attendanceSubmitBtn.addEventListener('click', () => submitDailyAttendance());
+if (dailyAttendanceBtn) dailyAttendanceBtn.addEventListener('click', () => openDailyAttendance());
 
 (async function init() {
   const ok = await loadUser();

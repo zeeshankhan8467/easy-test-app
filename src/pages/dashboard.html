@@ -22,7 +22,7 @@
       </div>
     </header>
 
-    <p class="meta dashboard-intro">Select an exam to run live. <strong>Frozen</strong> exams can sync clicker results to the server. Connect the clicker base station before starting.</p>
+    <p class="meta dashboard-intro">Take <strong>daily attendance</strong> with your participant list (no exam), or select a <strong>frozen</strong> exam to run live. Connect the clicker base station first.</p>
 
     <section class="dashboard-section">
       <h2 class="section-heading">Your exams</h2>
@@ -30,7 +30,7 @@
       <div id="noExams" class="no-exams hidden">No exams found. Create an exam in the EasyTest web app first.</div>
     </section>
 
-  <!-- Attendance modal (before starting exam) -->
+  <!-- Daily attendance modal (submit to server; no exam) -->
   <div id="attendanceModal" class="attendance-modal hidden" role="dialog" aria-labelledby="attendanceModalTitle" aria-modal="true">
     <div class="attendance-modal-backdrop" id="attendanceModalBackdrop"></div>
     <div class="attendance-modal-content">
@@ -55,16 +55,21 @@
       </div>
       <div class="attendance-modal-actions">
         <button type="button" class="btn btn-secondary" id="attendanceConnectBtn">Connect & start</button>
-        <button type="button" class="btn btn-outline" id="attendanceDoneBtn">Done</button>
+        <button type="button" class="btn btn-outline" id="attendanceDoneBtn">Close</button>
+        <button type="button" class="btn btn-primary hidden" id="attendanceSubmitBtn">Submit attendance</button>
         <button type="button" class="btn btn-primary" id="attendanceRunExamBtn">Run exam</button>
       </div>
     </div>
   </div>
 
     <section class="dashboard-section">
-      <h2 class="section-heading">Students (participants in your exams)</h2>
+      <div class="dashboard-section-head">
+        <h2 class="section-heading">Your participants</h2>
+        <button type="button" class="btn btn-secondary" id="dailyAttendanceBtn">Take attendance (today)</button>
+      </div>
+      <p class="meta section-hint">Uses your full participant list from the web app (same as teacher roster). Saves to the server by date — no exam needed.</p>
       <div id="studentList" class="student-list"></div>
-      <div id="noStudents" class="no-exams hidden">No students yet. Add participants to exams in the EasyTest web app.</div>
+      <div id="noStudents" class="no-exams hidden">No participants yet. Add them in the EasyTest web app.</div>
     </section>
   </div>
   <script src="dashboard.js"></script>

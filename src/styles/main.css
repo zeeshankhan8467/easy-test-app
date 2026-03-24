@@ -208,6 +208,17 @@ body {
 
 .dashboard-section { margin-bottom: 2rem; }
 .section-heading { font-size: 1rem; font-weight: 600; margin: 0 0 0.75rem; color: var(--text); }
+.dashboard-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+.dashboard-section-head .section-heading { margin-bottom: 0; }
+.dashboard-section-head .btn { width: auto; margin-top: 0; }
+.section-hint { margin: 0 0 1rem; font-size: 0.9rem; color: var(--text-muted); line-height: 1.4; }
 .student-list { background: var(--bg-card); border-radius: 10px; overflow: hidden; }
 .student-list-header {
   display: grid;
@@ -541,6 +552,7 @@ body {
 }
 .badge-present { background: var(--success); color: #0f172a; }
 .badge-absent { background: rgba(160,160,160,0.3); color: var(--text-muted); }
+.badge-noclicker { background: rgba(251, 191, 36, 0.2); color: var(--warning); }
 
 /* Attendance modal – clean overlay and card */
 .attendance-modal {
@@ -692,6 +704,10 @@ body {
 .attendance-modal-item.absent {
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.attendance-modal-item.unmarked {
+  background: rgba(251, 191, 36, 0.06);
+  border: 1px solid rgba(251, 191, 36, 0.15);
 }
 .attendance-modal-item .attendance-name {
   flex: 1;
