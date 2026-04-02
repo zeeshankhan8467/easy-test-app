@@ -306,11 +306,9 @@ async function startAttendanceSession() {
     baseId: 0,
     voteType: 10,
     optionCount: 4,
-    timeout: 0,
     minSelect: 1,
     maxSelect: 1,
-    submitMode: 2, // 1 = no OK on clicker (config.json clickerSubmitMode overrides)
-    displayMode: 0,
+    optionDisplay: 'alpha',
   });
   if (startResult.success) {
     if (attendanceConnectBtn) attendanceConnectBtn.textContent = 'Connected';

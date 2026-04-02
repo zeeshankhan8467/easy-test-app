@@ -17,6 +17,8 @@ let perQuestionSeconds = 30; // default; 0 = no auto-advance
 let nextQuestionTimeout = null; // for auto-advance when all submitted
 let revisable = false; // from snapshot: if true, students can change their answer (reattempt)
 let examStartedAt = null;
+/** Wall-clock ms when voting started for the current question (clicker session active). */
+let currentQuestionStartedAtMs = null;
 /** From snapshot: show option breakdown / answers as they arrive */
 let showLiveResponse = false;
 /** From snapshot: when show_live_response is false, reveal breakdown after all students submit per question */
@@ -57,6 +59,46 @@ function snapshotBool(val, defaultVal) {
   return defaultVal;
 }
 
+/** Instant as ISO 8601 with Asia/Kolkata offset (+05:30) for API payloads. */
+function toISOStringIST(ms) {
+  const d = new Date(ms);
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const get = (t) => parts.find((x) => x.type === t)?.value || '';
+  let millis = '000';
+  try {
+    const pf = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      fractionalSecondDigits: 3,
+      hour12: false,
+    }).formatToParts(d);
+    const f = pf.find((x) => x.type === 'fractionalSecond')?.value;
+    if (f != null && f !== '') millis = String(f).replace(/[^\d]/g, '').padStart(3, '0').slice(0, 3);
+  } catch (_) {
+    /* older runtimes: keep .000 */
+  }
+  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}.${millis}+05:30`;
+}
+
+function beginQuestionTiming() {
+  const t = Date.now();
+  currentQuestionStartedAtMs = t;
+  return t;
+}
+
+function secondsSinceCurrentQuestionStart(answerTimestampMs) {
+  if (currentQuestionStartedAtMs == null) return 0;
+  return Math.max(0, Math.floor(((answerTimestampMs || Date.now()) - currentQuestionStartedAtMs) / 1000));
+}
+
 function totalParticipantCount() {
   return Object.keys(clickerToParticipant).length || 0;
 }
@@ -70,7 +112,7 @@ function allStudentsAnsweredForQuestionIndex(qIdx) {
   return Object.keys(map).length >= total;
 }
 
-/** Show option bars / per-option % and student answer letters */
+/** Show option bars / per-option % and student answers (A–J or 1–10 by question option_display) */
 function shouldRevealOptionStatsForQuestionIndex(qIdx) {
   if (examState === 'ended') return true;
   if (showLiveResponse) return true;
@@ -194,19 +236,9 @@ function updateStartButtonState() {
   startBtn.title = !hasQuestions ? 'No questions in this exam' : '';
 }
 
-function renderQuestion() {
-  if (!questions.length) {
-    if (questionNumber) questionNumber.textContent = '—';
-    if (questionTypeEl) questionTypeEl.textContent = 'MCQ';
-    if (questionText) {
-      questionText.textContent = 'No questions in this exam. Add questions in the EasyTest web app and freeze the exam.';
-    }
-    if (optionsList) optionsList.innerHTML = '';
-    updateStartButtonState();
-    return;
-  }
-  const q = questions[currentIndex];
-  // Normalize options to array (snapshot may have array, stringified JSON, or object with numeric keys)
+/** Normalize q.options to a plain array (same rules as render). */
+function normalizeQuestionOptionsArray(q) {
+  if (!q) return [];
   let opts = q.options;
   if (opts == null) opts = [];
   if (typeof opts === 'string') {
@@ -222,6 +254,54 @@ function renderQuestion() {
       opts = [];
     }
   }
+  return opts;
+}
+
+/**
+ * Per-question display mode from snapshot (matches web app / backend option_display).
+ * 'numeric' → show 1,2,3… and prefer numeric keypad session hint; 'alpha' → A,B,C…
+ */
+function resolveOptionDisplayForQuestion(q) {
+  if (!q) return 'alpha';
+  const opts = normalizeQuestionOptionsArray(q);
+  const rawOptionDisplay = (q.option_display != null && q.option_display !== '')
+    ? q.option_display
+    : (snapshot && snapshot.option_display != null ? snapshot.option_display : '');
+  let optionDisplay = String(rawOptionDisplay).toLowerCase().trim();
+  if (optionDisplay !== 'numeric' && optionDisplay !== 'alpha' && opts.length > 0) {
+    const allNumeric = opts.every(o => /^\d+$/.test(String(o).trim()));
+    optionDisplay = allNumeric ? 'numeric' : 'alpha';
+  }
+  if (optionDisplay !== 'numeric') optionDisplay = 'alpha';
+  return optionDisplay;
+}
+
+function getCurrentQuestionOptionDisplay() {
+  if (!questions.length || currentIndex < 0 || currentIndex >= questions.length) return 'alpha';
+  return resolveOptionDisplayForQuestion(questions[currentIndex]);
+}
+
+/** Map internal SDK letter (A=first option) to what teachers see: A–J or 1–10. */
+function formatLiveAnswerDisplay(internalLetter) {
+  const c = (internalLetter || '').toString().toUpperCase().charAt(0);
+  if (c < 'A' || c > 'J') return internalLetter || '';
+  if (getCurrentQuestionOptionDisplay() !== 'numeric') return c;
+  return String(c.charCodeAt(0) - 64);
+}
+
+function renderQuestion() {
+  if (!questions.length) {
+    if (questionNumber) questionNumber.textContent = '—';
+    if (questionTypeEl) questionTypeEl.textContent = 'MCQ';
+    if (questionText) {
+      questionText.textContent = 'No questions in this exam. Add questions in the EasyTest web app and freeze the exam.';
+    }
+    if (optionsList) optionsList.innerHTML = '';
+    updateStartButtonState();
+    return;
+  }
+  const q = questions[currentIndex];
+  const opts = normalizeQuestionOptionsArray(q);
   const optionCount = Math.max(1, opts.length);
 
   if (questionNumber) questionNumber.textContent = `Q${currentIndex + 1}`;
@@ -237,16 +317,7 @@ function renderQuestion() {
     }
   }
 
-  // Option display is per-question: use this question's option_display, then exam-level default
-  const rawOptionDisplay = (q.option_display != null && q.option_display !== '')
-    ? q.option_display
-    : (snapshot && snapshot.option_display != null ? snapshot.option_display : '');
-  let optionDisplay = String(rawOptionDisplay).toLowerCase().trim();
-  if (optionDisplay !== 'numeric' && optionDisplay !== 'alpha' && opts && opts.length > 0) {
-    const allNumeric = opts.every(o => /^\d+$/.test(String(o).trim()));
-    optionDisplay = allNumeric ? 'numeric' : 'alpha';
-  }
-  if (optionDisplay !== 'numeric') optionDisplay = 'alpha';
+  const optionDisplay = resolveOptionDisplayForQuestion(q);
   const useNumericLabels = optionDisplay === 'numeric';
   const n = optionCount;
   // Build labels: numeric -> 1,2,3,4; alpha -> A,B,C,D
@@ -512,9 +583,9 @@ function updateResponsesUI() {
   responsesListEl.innerHTML = sorted.map(([, data]) => {
     const name = data.name || (data.participantId != null && (participantNames[data.participantId] || participantNames[String(data.participantId)])) || 'Student';
     const initials = name.split(/\s+/).map(n => n[0]).join('').toUpperCase().substring(0, 2) || '?';
-    const ans = (data.answer || '').toString().toUpperCase().charAt(0);
-    const answerHtml = revealAnswers && ans >= 'A' && ans <= 'J'
-      ? `<span class="response-answer">${escapeHtml(ans)}</span>`
+    const disp = formatLiveAnswerDisplay(data.answer);
+    const answerHtml = revealAnswers && disp
+      ? `<span class="response-answer">${escapeHtml(disp)}</span>`
       : '<span class="response-answer pending">Submitted</span>';
     return `
       <div class="response-item">
@@ -550,29 +621,35 @@ function buildSyncPayload() {
       const isDevice = key.startsWith('d:');
       const keySN = isKeySN ? (data.keySN || data.clickerIdForBackend || key.slice(2)) : null;
       const deviceOnly = isDevice ? (data.clickerIdForBackend || data.deviceId || key.slice(2)) : null;
+      const ts = data.timestamp != null ? data.timestamp : Date.now();
+      const answeredAt = toISOStringIST(ts);
+      const pushRow = (row) => {
+        if (typeof data.time_taken === 'number') row.time_taken = data.time_taken;
+        responsesList.push(row);
+      };
       if (isKeySN && keySN) {
-        responsesList.push({
+        pushRow({
           clicker_id: keySN,
           question_id: questionId,
           selected_answer: letterToIndex(data.answer),
-          answered_at: data.timestamp ? new Date(data.timestamp).toISOString() : new Date().toISOString(),
+          answered_at: answeredAt,
         });
       } else if (isDevice && deviceOnly) {
-        responsesList.push({
+        pushRow({
           clicker_id: String(deviceOnly),
           question_id: questionId,
           selected_answer: letterToIndex(data.answer),
-          answered_at: data.timestamp ? new Date(data.timestamp).toISOString() : new Date().toISOString(),
+          answered_at: answeredAt,
         });
       } else if (!isKeySN && !isDevice) {
         const participantId = parseInt(key, 10);
         if (!isNaN(participantId)) {
           attendanceSet.add(participantId);
-          responsesList.push({
+          pushRow({
             participant_id: participantId,
             question_id: questionId,
             selected_answer: letterToIndex(data.answer),
-            answered_at: data.timestamp ? new Date(data.timestamp).toISOString() : new Date().toISOString(),
+            answered_at: answeredAt,
           });
         }
       }
@@ -682,6 +759,7 @@ function onClickerResponse(data) {
   if (!revisable && responses[deviceId]) return;
 
   const timestamp = data.timestamp || Date.now();
+  const timeTaken = secondsSinceCurrentQuestionStart(timestamp);
   const record = {
     answer,
     participantId: participant.id,
@@ -696,16 +774,17 @@ function onClickerResponse(data) {
   if (!allResponsesByQuestion[currentIndex]) allResponsesByQuestion[currentIndex] = {};
   const q = questions[currentIndex];
   const questionId = q && q.question_id != null ? q.question_id : null;
-  const answeredAt = new Date(timestamp).toISOString();
+  const answeredAt = toISOStringIST(timestamp);
   const payloadItem = questionId != null ? {
     question_id: questionId,
     selected_answer: letterToIndex(answer),
     answered_at: answeredAt,
+    time_taken: timeTaken,
   } : null;
 
   const participantId = participant.id;
   const alreadyHad = !!allResponsesByQuestion[currentIndex][participantId];
-  allResponsesByQuestion[currentIndex][participantId] = { answer, timestamp };
+  allResponsesByQuestion[currentIndex][participantId] = { answer, timestamp, time_taken: timeTaken };
   if (revisable || !alreadyHad) {
     persistPending();
     if (payloadItem) {
@@ -789,13 +868,31 @@ function nextQuestion() {
       const keySN = isKeySN ? (data.keySN || data.clickerIdForBackend || key.slice(2)) : null;
       const deviceOnly = isDevice ? (data.clickerIdForBackend || data.deviceId || key.slice(2)) : null;
       if (isKeySN && keySN) {
-        responses[key] = { answer: data.answer, participantId: null, name: participantNames[keySN] || participantNames[key] || 'Student', timestamp: data.timestamp };
+        responses[key] = {
+          answer: data.answer,
+          participantId: null,
+          name: participantNames[keySN] || participantNames[key] || 'Student',
+          timestamp: data.timestamp,
+          time_taken: data.time_taken,
+        };
       } else if (isDevice && deviceOnly) {
-        responses[key] = { answer: data.answer, participantId: null, name: participantNames[deviceOnly] || participantNames[key] || 'Student', timestamp: data.timestamp };
+        responses[key] = {
+          answer: data.answer,
+          participantId: null,
+          name: participantNames[deviceOnly] || participantNames[key] || 'Student',
+          timestamp: data.timestamp,
+          time_taken: data.time_taken,
+        };
       } else {
         const pid = parseInt(key, 10);
         if (!isNaN(pid)) {
-          responses['p' + pid] = { answer: data.answer, participantId: pid, name: participantNames[pid] || participantNames[String(pid)] || 'Student', timestamp: data.timestamp };
+          responses['p' + pid] = {
+            answer: data.answer,
+            participantId: pid,
+            name: participantNames[pid] || participantNames[String(pid)] || 'Student',
+            timestamp: data.timestamp,
+            time_taken: data.time_taken,
+          };
         }
       }
     });
@@ -806,6 +903,7 @@ function nextQuestion() {
   // Start a fresh clicker session for the new current question
   if (examState === 'running') {
     startClickerSessionForCurrentQuestion();
+    beginQuestionTiming();
     startTimer(false);
   }
 }
@@ -823,15 +921,14 @@ function getCurrentQuestionOptionCount() {
 // Start a clicker session for the question currently shown on screen.
 async function startClickerSessionForCurrentQuestion() {
   const optionCount = getCurrentQuestionOptionCount();
+  const optionDisplay = getCurrentQuestionOptionDisplay();
   const result = await window.electronAPI.startSession({
     baseId: 0,
-    voteType: 10,   // Multiple Choice
+    voteType: 10,   // Multiple Choice (SDK: Mode1=1 ABCD / 2=1234 from optionDisplay)
     optionCount,
-    timeout: 0,     // no timeout; main process uses || 30 so SDK gets 30
+    optionDisplay,  // 'alpha' | 'numeric' → main process VoteStart2 Mode1
     minSelect: 1,
     maxSelect: 1,
-    submitMode: 1,
-    displayMode: 0,
   });
   if (!result.success) console.warn('[EasyTest Live] startSession (current question):', result.error);
   return result;
@@ -860,7 +957,8 @@ async function startExam() {
   const startResult = await startClickerSessionForCurrentQuestion();
   if (!startResult.success) console.warn('SDK startSession:', startResult.error);
 
-  examStartedAt = new Date().toISOString(); // so backend can compute time_taken from exam start
+  const startMs = beginQuestionTiming();
+  examStartedAt = toISOStringIST(startMs);
   examState = 'running';
   startBtn.classList.add('hidden');
   pauseBtn.classList.remove('hidden');
@@ -901,6 +999,7 @@ function resumeExam() {
   }
   // Resume clicker session for the question currently shown
   startClickerSessionForCurrentQuestion();
+  beginQuestionTiming();
   startTimer(true); // continue from remaining time, do not reset
 }
 
@@ -939,11 +1038,12 @@ async function endExam() {
         question_id: r.question_id,
         selected_answer: r.selected_answer,
         answered_at: r.answered_at,
+        time_taken: r.time_taken,
         participant_id: r.participant_id ?? '(none)',
         clicker_id: r.clicker_id ?? '(none)',
       });
     });
-    console.log('[EasyTest Live] Time data: each response includes answered_at (ISO) – backend uses this to compute time_taken per question.');
+    console.log('[EasyTest Live] Time data: answered_at is IST (+05:30); time_taken is seconds on that question (sent explicitly).');
   } else {
     console.log('[EasyTest Live] No responses to send.');
   }

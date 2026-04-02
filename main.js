@@ -35,7 +35,7 @@ function getConfig() {
   return {};
 }
 
-/** Create default config.json in userData if missing, so user can find and edit it (e.g. clickerSubmitMode). */
+/** Create default config.json in userData if missing. */
 function ensureConfigFile() {
   const p = getConfigPath();
   if (fs.existsSync(p)) return;
@@ -44,9 +44,10 @@ function ensureConfigFile() {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const defaultConfig = {
       apiUrl: DEFAULT_API_URL,
-      clickerSubmitMode: 0,
-      clickerDisplayMode: 0,
-      _comment: 'clickerSubmitMode: try 0, 1, or 2. clickerDisplayMode: try 1. Restart app after editing.'
+      clickerDisplayMode: null,
+      numericPreferKeyIdOverSdkRaw: false,
+      _comment:
+        'clickerDisplayMode: null = follow exam (1=ABCD 2=1234 on clicker); or 1-5 to force SDK Mode1. Optional: clickerModifiableAfterSubmit, clickerClassifiedAfterSubmit, clickerLessEnabled (0/1 each) for VoteStart2 Modes 2-4. numericPreferKeyIdOverSdkRaw: true = use physical key id on numeric questions.',
     };
     fs.writeFileSync(p, JSON.stringify(defaultConfig, null, 2), 'utf8');
     console.log('[EasyTest Live] Created config file at:', p);
@@ -205,6 +206,8 @@ let keyEventCallback = null;
 let voteEventCallback = null;
 let hdParamCallback = null;
 let loggedEmptyKeySN = false;
+/** Synced from last sdk:startSession: 'alpha' | 'numeric' (per-question option_display). */
+let currentSessionOptionDisplay = 'alpha';
 
 // Base station USB VID/PID from SDK log (e.g. "device disconnected:: ... VID_2F70&PID_EA10 ...")
 const BASE_STATION_VID = '2f70';
@@ -339,23 +342,75 @@ function loadSDK() {
         mainWindow.webContents.send('sdk-vote-event', { baseId, mode, info });
     }, koffi.pointer(VoteEventCallback));
     keyEventCallback = koffi.register((baseId, keyId, keySN, mode, time, info) => {
+      const cfg = getConfig();
       const keyNum = typeof keyId === 'number' ? keyId : parseInt(keyId, 10);
       let answer = '';
+      let answerSource = '';
       const infoStr = (info && typeof info === 'string') ? info.trim() : '';
-      if (infoStr) {
-        const upper = infoStr.toUpperCase().charAt(0);
+      const isNumericVote = currentSessionOptionDisplay === 'numeric';
+      const preferKeyIdForNumeric = !!(cfg.numericPreferKeyIdOverSdkRaw === true || cfg.numericPreferKeyIdOverSdkRaw === 'true');
+
+      // 1) raw_info is only digits → option number 1..10 → internal A..J
+      if (infoStr && /^(\d{1,2})$/.test(infoStr)) {
         const num = parseInt(infoStr, 10);
-        if (num >= 1 && num <= 10) answer = String.fromCharCode(64 + num);
-        else if (upper >= 'A' && upper <= 'J') answer = upper;
-        else {
+        if (num >= 1 && num <= 10) {
+          answer = String.fromCharCode(64 + num);
+          answerSource = 'raw digit';
+        }
+      }
+
+      // 2) Numeric vote + config: map physical keyId first (1 = option 1 -> A), ignore SDK letter in raw
+      if (!answer && preferKeyIdForNumeric && isNumericVote && !isNaN(keyNum)) {
+        if (keyNum >= 1 && keyNum <= 10) {
+          answer = String.fromCharCode(64 + keyNum);
+          answerSource = 'keyId 1-based (config)';
+        } else if (keyNum === 0) {
+          answer = 'A';
+          answerSource = 'keyId 0->A (config)';
+        }
+      }
+
+      // 3) SDK raw_info letter A–J (or loose number): what the base decoded — default for numeric exams because keyId often disagrees with raw (e.g. keyId=1, raw "B")
+      if (!answer && infoStr) {
+        const upper = infoStr.toUpperCase().charAt(0);
+        if (upper >= 'A' && upper <= 'J') {
+          answer = upper;
+          answerSource = 'raw letter';
+        } else {
+          const numLoose = parseInt(infoStr, 10);
+          if (!isNaN(numLoose) && numLoose >= 1 && numLoose <= 10) {
+            answer = String.fromCharCode(64 + numLoose);
+            answerSource = 'raw number';
+          }
+        }
+        if (!answer) {
           console.log('[EasyTest Live] Clicker key ignored: raw_info="' + infoStr + '" (not A-J / 1-10)');
           return;
         }
       }
-      if (!answer) {
-        if (keyNum >= 0 && keyNum <= 9) answer = String.fromCharCode(65 + keyNum);
-        else if (keyNum >= 1 && keyNum <= 10) answer = String.fromCharCode(64 + keyNum);
+
+      // 4) Numeric: keyId 1-based only when raw_info did not supply a choice
+      if (!answer && isNumericVote && !isNaN(keyNum)) {
+        if (keyNum >= 1 && keyNum <= 10) {
+          answer = String.fromCharCode(64 + keyNum);
+          answerSource = 'keyId 1-based (fallback)';
+        } else if (keyNum === 0) {
+          answer = 'A';
+          answerSource = 'keyId 0->A (fallback)';
+        }
       }
+
+      // 5) Alpha vote: keyId 0-based then 1-based
+      if (!answer && !isNumericVote) {
+        if (!isNaN(keyNum) && keyNum >= 0 && keyNum <= 9) {
+          answer = String.fromCharCode(65 + keyNum);
+          answerSource = 'keyId alpha 0-based';
+        } else if (!isNaN(keyNum) && keyNum >= 1 && keyNum <= 10) {
+          answer = String.fromCharCode(64 + keyNum);
+          answerSource = 'keyId alpha 1-based';
+        }
+      }
+
       const validAnswers = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
       if (!answer || !validAnswers.includes(answer)) return;
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -365,9 +420,25 @@ function loadSDK() {
           console.log('[EasyTest Live] Clicker keySN is empty from SDK (type=' + typeof keySN + '). Syncing with deviceId fallback (e.g. d1_123).');
         }
         const payload = {
-          baseId, clicker_id: keyId, keySN: keySNStr || (keySN != null ? String(keySN) : ''), mode, time, answer, raw_info: info, timestamp: Date.now()
+          baseId,
+          clicker_id: keyId,
+          keySN: keySNStr || (keySN != null ? String(keySN) : ''),
+          mode,
+          time,
+          answer,
+          raw_info: info,
+          timestamp: Date.now(),
+          optionDisplay: currentSessionOptionDisplay,
         };
-        console.log('[EasyTest Live] Clicker response from SDK: keyId=' + keyId + ', keySN="' + keySNStr + '", answer=' + answer + ', raw_info="' + (info != null ? String(info) : '') + '"');
+        const optIdx = answer.charCodeAt(0) - 65;
+        const optNum = optIdx + 1;
+        const modeNote = isNumericVote
+          ? 'numeric UI; stored index ' + optIdx + ' (option ' + optNum + ' as 1-based)'
+          : 'alpha UI; index ' + optIdx;
+        console.log(
+          '[EasyTest Live] Clicker response from SDK: keyId=' + keyId + ', keySN="' + keySNStr + '", answer=' + answer +
+          ', raw_info="' + (info != null ? String(info) : '') + '" [' + answerSource + ' | ' + modeNote + ']'
+        );
         mainWindow.webContents.send('clicker-response', payload);
       }
     }, koffi.pointer(KeyEventCallback));
@@ -577,26 +648,24 @@ ipcMain.handle('api:syncLiveResults', async (event, { examId, responses, attenda
   const attCount = (attendance && attendance.length) || 0;
   console.log(`[EasyTest Live] Submitting to backend: examId=${examId}, responses=${respCount}, attendance=${attCount}`);
   if (exam_started_at) {
-    console.log('[EasyTest Live] TIME_TAKEN DEBUG: exam_started_at sent to backend:', exam_started_at);
+    console.log('[EasyTest Live] TIME_TAKEN DEBUG: exam_started_at (IST):', exam_started_at);
   }
   if (respCount > 0 && responses[0]) {
     const r = responses[0];
     console.log('[EasyTest Live] First response: participant_id=' + (r.participant_id ?? 'none') + ', clicker_id="' + (r.clicker_id ?? '') + '", question_id=' + (r.question_id ?? ''));
-    if (r.answered_at && exam_started_at) {
-      const startMs = new Date(exam_started_at).getTime();
-      const answeredMs = new Date(r.answered_at).getTime();
-      const sec = Math.max(0, Math.round((answeredMs - startMs) / 1000));
-      console.log('[EasyTest Live] TIME_TAKEN DEBUG: first response answered_at=' + r.answered_at + ', expected time_taken (sec)=' + sec);
+    if (r.time_taken != null && r.time_taken !== '') {
+      console.log('[EasyTest Live] TIME_TAKEN DEBUG: first response time_taken (sec, per question)=' + r.time_taken + ', answered_at=' + r.answered_at);
     }
   }
   if (responses && responses.length > 0) {
-    log('Sync payload (time data: answered_at per response)', {
+    log('Sync payload (answered_at IST, time_taken per question)', {
       examId,
       responseCount: responses.length,
       responses: responses.map(r => ({
         question_id: r.question_id,
         selected_answer: r.selected_answer,
         answered_at: r.answered_at,
+        time_taken: r.time_taken ?? null,
         participant_id: r.participant_id ?? null,
         clicker_id: r.clicker_id ?? null,
       })),
@@ -660,53 +729,48 @@ ipcMain.handle('sdk:disconnect', async (event, baseId = 0) => {
   if (!sdkLoaded || !sdk) return { success: false, error: 'SDK not loaded' };
   try { connectedBaseId = -1; return { success: sdk.Disconnect(baseId) >= 0, result: sdk.Disconnect(baseId) }; } catch (e) { return { success: false, error: e.message }; }
 });
-// Start voting session — VoteType_Choice setting: minSelect,maxSelect,submitMode,displayMode,timeout,optionCount
-// Per EasyTest SDK: Keypad_Config (WriteHDParam mode 17) = "ReportMode, offtime, SubmisMode, Buzzer, LCD, Vib, Lang" — set SubmisMode=0 so clicker does not require OK
+// VoteType_Choice (10): sSetting = Mode1..Mode6 per EasyTest SDK V4.4.6 (M=options, N=selections; Mode1: 1=ABCD 2=1234).
 ipcMain.handle('sdk:startSession', async (event, settings = {}) => {
   if (!sdkLoaded || !sdk) return { success: false, error: 'SDK not loaded' };
   try {
     const cfg = getConfig();
     const baseId = settings.baseId || 0;
-    const voteType = settings.voteType || 10; // 10 = Choice/MCQ
-    const optionCount = settings.optionCount || 4;
-    const timeout = settings.timeout || 30; // 0 from renderer becomes 30 so clicker does not go blank
-    const minSelect = settings.minSelect || 1;
-    const maxSelect = settings.maxSelect || 1;
-    // Prefer config.json clickerSubmitMode so user can try 0,1,2 without code change (some devices: 1=no OK)
-    const submitMode = cfg.clickerSubmitMode !== undefined && cfg.clickerSubmitMode !== null
-      ? Number(cfg.clickerSubmitMode)
-      : (settings.submitMode ?? 1);
-    // displayMode: 0 = blank, 1 = active. Some devices: try clickerDisplayMode=1 in config to avoid OK step
-    const displayMode = cfg.clickerDisplayMode !== undefined && cfg.clickerDisplayMode !== null
-      ? Number(cfg.clickerDisplayMode)
-      : (settings.displayMode ?? 0);
-    const settingStr = `${minSelect},${maxSelect},${submitMode},${displayMode},${timeout},${optionCount}`;
+    const voteType = settings.voteType || 10;
+    if (voteType !== 10) return { success: false, error: 'Only voteType 10 (Choice) is supported' };
+    const optionCount = Math.min(10, Math.max(1, Number(settings.optionCount) || 4));
+    const minSelect = Math.max(1, Number(settings.minSelect) || 1);
+    const maxSelect = Math.max(minSelect, Number(settings.maxSelect) || 1);
+    const rawOd = (settings.optionDisplay != null && settings.optionDisplay !== '')
+      ? String(settings.optionDisplay).toLowerCase().trim()
+      : 'alpha';
+    currentSessionOptionDisplay = rawOd === 'numeric' ? 'numeric' : 'alpha';
 
-    // EasyTest SDK KeyPad_config (mode 17 in latest guide): "Report Mode, Auto Power off Time Mode, Send Mode, Buzz Mode, LCD Backlight Mode, Vibration Switch, Language Mode"
-    // Send Mode: 0 = require Submit/OK button, 1 = auto-submit on key press.
-    // To match the official C# demo behaviour (and avoid pressing OK), force Send Mode = 1 here.
-    const keypadSendMode = 1;
-    const keypadConfigStr = `0,0,${keypadSendMode},1,1,0,0`; // Report=0, AutoPowerOff=0 (default), Send=1 (auto-submit), Buzzer=1, LCD=1, Vib=0, Lang=0
+    let mode1;
+    const cdRaw = cfg.clickerDisplayMode;
+    if (cdRaw !== undefined && cdRaw !== null && cdRaw !== '') {
+      const cd = Number(cdRaw);
+      if (cd >= 1 && cd <= 5) mode1 = cd;
+    }
+    if (mode1 === undefined) mode1 = currentSessionOptionDisplay === 'numeric' ? 2 : 1;
+    const mode2 = cfg.clickerModifiableAfterSubmit != null && cfg.clickerModifiableAfterSubmit !== ''
+      ? Number(cfg.clickerModifiableAfterSubmit) : 0;
+    const mode3 = cfg.clickerClassifiedAfterSubmit != null && cfg.clickerClassifiedAfterSubmit !== ''
+      ? Number(cfg.clickerClassifiedAfterSubmit) : 0;
+    const mode4 = cfg.clickerLessEnabled != null && cfg.clickerLessEnabled !== ''
+      ? Number(cfg.clickerLessEnabled) : 0;
+    const mode5 = optionCount;
+    const mode6 = Math.min(mode5, maxSelect);
+    const settingStr = `${mode1},${mode2},${mode3},${mode4},${mode5},${mode6}`;
+
+    const keypadConfigStr = '0,0,1,1,1,0,0';
     try {
       const wr = sdk.WriteHDParam(baseId, 17, keypadConfigStr);
-      console.log('[EasyTest Live] WriteHDParam(KeyPad_config=17) for SendMode=' + keypadSendMode + ': result=' + wr + ', setting="' + keypadConfigStr + '"');
       log('WriteHDParam KeyPad_config', { baseId, mode: 17, setting: keypadConfigStr, result: wr });
     } catch (e) {
-      console.warn('[EasyTest Live] WriteHDParam(17) failed (continuing with VoteStart2):', e.message);
+      console.warn('[EasyTest Live] WriteHDParam(17):', e.message);
     }
 
-    // Print session start settings to console so you can verify what is sent to the clicker
-    console.log('========== [EasyTest Live] SESSION START SETTINGS ==========');
-    console.log('[EasyTest Live] baseId:', baseId);
-    console.log('[EasyTest Live] voteType:', voteType, '(10 = Choice/MCQ)');
-    console.log('[EasyTest Live] setting string sent to SDK:', '"' + settingStr + '"');
-    console.log('[EasyTest Live] Parsed: minSelect=' + minSelect + ', maxSelect=' + maxSelect + ', submitMode=' + submitMode + ', displayMode=' + displayMode + ', timeout=' + timeout + ', optionCount=' + optionCount);
-    console.log('[EasyTest Live] config: clickerSubmitMode=' + (cfg.clickerSubmitMode !== undefined && cfg.clickerSubmitMode !== null ? cfg.clickerSubmitMode : '(default)') + ', clickerDisplayMode=' + (cfg.clickerDisplayMode !== undefined && cfg.clickerDisplayMode !== null ? cfg.clickerDisplayMode : '(default)'));
-    if (submitMode === 0 || submitMode === 1) {
-      console.log('[EasyTest Live] If clicker STILL requires OK: some SunVote devices ignore submitMode. Try clickerDisplayMode=1 in config.json, or check base station / clicker manual for "instant submit" or "confirm off".');
-    }
-    console.log('============================================================');
-    log('VoteStart2', { baseId, voteType, setting: settingStr, submitMode, fromConfig: cfg.clickerSubmitMode });
+    log('VoteStart2', { baseId, voteType, setting: settingStr, optionDisplay: currentSessionOptionDisplay });
 
     const result = sdk.VoteStart2(baseId, voteType, settingStr);
     return { success: result >= 0, result, message: result >= 0 ? 'Session started' : 'Failed to start session' };

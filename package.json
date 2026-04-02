@@ -1,6 +1,6 @@
 {
   "name": "easytest-live",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "EasyTest Live - Classroom clicker-based exam application",
   "main": "main.js",
   "scripts": {
