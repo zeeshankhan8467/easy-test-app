@@ -380,6 +380,8 @@ body {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .question-meta {
   display: flex;
@@ -410,8 +412,46 @@ body {
   margin-bottom: 0.4rem;
   color: var(--text);
   flex-shrink: 0;
+  overflow-x: auto;
+  max-width: 100%;
 }
-.question-text p { margin: 0; }
+.question-text p { margin: 0 0 0.5rem 0; }
+.question-text p:last-child { margin-bottom: 0; }
+/* Fixed-size video box (16:9); scales down on narrow panels */
+.question-text .video-embed-wrapper {
+  display: block;
+  width: 100%;
+  max-width: 560px;
+  margin: 0.35rem 0 0.65rem 0;
+}
+.question-text .question-youtube-embed,
+.question-text iframe.question-youtube-embed,
+.question-text iframe {
+  display: block;
+  width: min(560px, 100%);
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  height: auto;
+  min-height: 200px;
+  border: 0;
+  border-radius: 8px;
+  margin: 0.35rem 0 0.65rem 0;
+  background: #000;
+  flex-shrink: 0;
+}
+/* Fixed max box for inline images so huge assets do not blow the layout */
+.question-text .question-inline-img,
+.question-text img.question-inline-img,
+.question-text img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 480px;
+  max-height: 280px;
+  border-radius: 8px;
+  margin: 0.35rem 0 0.65rem 0;
+  object-fit: contain;
+}
 .options-list {
   display: flex;
   flex-direction: column;

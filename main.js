@@ -3,7 +3,7 @@
  * Classroom clicker-based exam app. Connects to EasyTest backend and same
  * clicker hardware (EasyTestSDK/koffi) as acadally-electron-app.
  */
-const { app, BrowserWindow, ipcMain, net } = require('electron');
+const { app, BrowserWindow, ipcMain, net, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { exec } = require('child_process');
@@ -79,6 +79,44 @@ function getApiBaseUrl() {
     url = (url || DEFAULT_API_URL).replace(/\/*$/, '/');
   }
   return url;
+}
+
+/**
+ * YouTube embeds show Error 153 without a valid https Referer (file:// parent sends none).
+ * Must match the `origin` query param we add in the renderer when possible.
+ */
+function getYoutubeEmbedRefererOrigin() {
+  try {
+    const u = new URL(getApiBaseUrl());
+    if (u.protocol === 'https:' && u.hostname) return `${u.origin}/`;
+  } catch (e) {
+    /* ignore */
+  }
+  return 'https://easytestlive.com/';
+}
+
+let youtubeEmbedRefererHookInstalled = false;
+function installYoutubeEmbedRefererFix(session) {
+  if (!session || youtubeEmbedRefererHookInstalled) return;
+  youtubeEmbedRefererHookInstalled = true;
+  session.webRequest.onBeforeSendHeaders(
+    {
+      urls: [
+        'https://www.youtube.com/*',
+        'https://youtube.com/*',
+        'https://www.youtube-nocookie.com/*',
+        'https://youtube-nocookie.com/*',
+      ],
+    },
+    (details, callback) => {
+      const requestHeaders = { ...details.requestHeaders };
+      const ref = requestHeaders.Referer || requestHeaders.referer;
+      if (!ref || (typeof ref === 'string' && ref.startsWith('file:'))) {
+        requestHeaders.Referer = getYoutubeEmbedRefererOrigin();
+      }
+      callback({ requestHeaders });
+    }
+  );
 }
 
 function makeRequest(url, options = {}) {
@@ -358,6 +396,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // file:// pages cannot embed https iframes (e.g. YouTube) with default web security
+      webSecurity: false,
     },
     backgroundColor: '#1a1a2e',
     show: false,
@@ -377,6 +417,7 @@ function createWindow() {
 app.whenReady().then(() => {
   ensureConfigFile();
   loadSDK();
+  installYoutubeEmbedRefererFix(session.defaultSession);
   createWindow();
   const userData = app.getPath('userData');
   const configPathOut = getConfigPath();
@@ -434,6 +475,11 @@ ipcMain.handle('auth:getUser', async () => {
   if (email) return { email: email, username: email.split('@')[0], displayName: email };
   return null;
 });
+
+/** Origin string (no trailing slash) for YouTube iframe `origin=` — aligns with Referer injection. */
+ipcMain.handle('app:youtubeEmbedOrigin', async () =>
+  getYoutubeEmbedRefererOrigin().replace(/\/$/, '')
+);
 
 // ============ EasyTest API ============
 function authHeaders() {

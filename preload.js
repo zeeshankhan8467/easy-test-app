@@ -40,4 +40,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   nav: (page) => ipcRenderer.invoke('nav:goto', page),
+
+  /** HTTPS origin for YouTube embed URL (Error 153 / Referer alignment). */
+  getYoutubeEmbedOrigin: () => ipcRenderer.invoke('app:youtubeEmbedOrigin'),
 });

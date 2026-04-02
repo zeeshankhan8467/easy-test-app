@@ -24,6 +24,9 @@ let showResponseAfterCompletion = true;
 /** From snapshot: auto-advance question when time is up or all answered; false = teacher uses Next */
 let questionChangeAutomatic = false;
 
+/** Must match main-process Referer used for YouTube (see app:youtubeEmbedOrigin). */
+let youtubeEmbedOriginParam = 'https://easytestlive.com';
+
 const timerDisplay = document.getElementById('timerDisplay');
 const examTitle = document.getElementById('examTitle');
 const connectionStatus = document.getElementById('connectionStatus');
@@ -195,7 +198,9 @@ function renderQuestion() {
   if (!questions.length) {
     if (questionNumber) questionNumber.textContent = '—';
     if (questionTypeEl) questionTypeEl.textContent = 'MCQ';
-    if (questionText) questionText.textContent = 'No questions in this exam. Add questions in the EasyTest web app and freeze the exam.';
+    if (questionText) {
+      questionText.textContent = 'No questions in this exam. Add questions in the EasyTest web app and freeze the exam.';
+    }
     if (optionsList) optionsList.innerHTML = '';
     updateStartButtonState();
     return;
@@ -221,7 +226,16 @@ function renderQuestion() {
 
   if (questionNumber) questionNumber.textContent = `Q${currentIndex + 1}`;
   if (questionTypeEl) questionTypeEl.textContent = (q.type || 'MCQ').toUpperCase();
-  if (questionText) questionText.textContent = stripHtml(q.text || '—');
+  if (questionText) {
+    const raw = q.text || '';
+    const safe = sanitizeQuestionHtml(raw);
+    if (safe) {
+      questionText.innerHTML = safe;
+    } else {
+      const plain = stripHtml(raw).trim();
+      questionText.textContent = plain || '—';
+    }
+  }
 
   // Option display is per-question: use this question's option_display, then exam-level default
   const rawOptionDisplay = (q.option_display != null && q.option_display !== '')
@@ -326,6 +340,158 @@ function stripHtml(html) {
   const div = document.createElement('div');
   div.innerHTML = str;
   return (div.textContent || div.innerText || '').trim();
+}
+
+const QUESTION_ALLOWED_TAGS = new Set([
+  'div', 'p', 'br', 'span', 'strong', 'b', 'em', 'i', 'u', 'ul', 'ol', 'li', 'blockquote',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr',
+]);
+
+function isAllowedIframeSrc(src) {
+  if (!src || typeof src !== 'string') return false;
+  try {
+    const u = new URL(src.trim());
+    const host = u.hostname.replace(/^www\./, '');
+    if (host !== 'youtube.com' && host !== 'youtube-nocookie.com') return false;
+    return u.pathname.startsWith('/embed/');
+  } catch (e) {
+    return false;
+  }
+}
+
+/** Prefer youtube-nocookie embed URL (fewer cookie issues in embedded players). */
+function normalizeYouTubeEmbedSrc(src) {
+  if (!src || typeof src !== 'string') return src;
+  try {
+    const u = new URL(src.trim());
+    const host = u.hostname.replace(/^www\./, '');
+    if (host !== 'youtube.com' && host !== 'youtube-nocookie.com') return src;
+    if (!u.pathname.startsWith('/embed/')) return src;
+    u.hostname = 'www.youtube-nocookie.com';
+    return u.toString();
+  } catch (e) {
+    return src;
+  }
+}
+
+function isAllowedImgSrc(src) {
+  if (!src || typeof src !== 'string') return false;
+  const s = src.trim();
+  if (s.startsWith('data:image/') && /;base64,/i.test(s)) {
+    return s.length <= 40 * 1024 * 1024;
+  }
+  try {
+    const u = new URL(s);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch (e) {
+    return false;
+  }
+}
+
+function stripUnsafeAttrs(el, tag) {
+  Array.from(el.attributes).forEach((attr) => {
+    const n = attr.name.toLowerCase();
+    if (n.startsWith('on')) {
+      el.removeAttribute(attr.name);
+      return;
+    }
+    if (n === 'style' || n === 'id') {
+      el.removeAttribute(attr.name);
+      return;
+    }
+    if (n === 'class' && (tag === 'div' || tag === 'span')) return;
+    el.removeAttribute(attr.name);
+  });
+}
+
+/**
+ * Allow safe HTML from exam snapshot: YouTube embeds, http(s)/data: images, basic typography.
+ * Everything else is stripped or unwrapped to reduce XSS risk.
+ */
+function sanitizeQuestionHtml(html) {
+  if (html == null || !String(html).trim()) return '';
+  let doc;
+  try {
+    doc = new DOMParser().parseFromString(String(html), 'text/html');
+  } catch (e) {
+    return '';
+  }
+  const root = doc.body;
+  if (!root) return '';
+
+  // Only walk body's *children* — never push <body> itself or it gets "unwrapped" as an unknown
+  // tag, detached from the document, and root.innerHTML becomes empty (nothing shows).
+  const postOrder = [];
+  function collectPost(n) {
+    if (n.nodeType !== Node.ELEMENT_NODE) return;
+    for (let c = n.firstChild; c; c = c.nextSibling) collectPost(c);
+    postOrder.push(n);
+  }
+  for (let c = root.firstChild; c; c = c.nextSibling) {
+    if (c.nodeType === Node.ELEMENT_NODE) collectPost(c);
+  }
+
+  for (const node of postOrder) {
+    const parent = node.parentNode;
+    if (!parent) continue;
+    const tag = node.tagName.toLowerCase();
+
+    if (tag === 'script' || tag === 'style') {
+      parent.removeChild(node);
+      continue;
+    }
+    if (tag === 'iframe') {
+      const src = (node.getAttribute('src') || '').trim();
+      if (isAllowedIframeSrc(src)) {
+        const embedSrc = normalizeYouTubeEmbedSrc(src);
+        const iframe = doc.createElement('iframe');
+        iframe.setAttribute('src', embedSrc);
+        iframe.setAttribute('allowfullscreen', 'true');
+        iframe.setAttribute('frameborder', '0');
+        iframe.setAttribute('loading', 'lazy');
+        iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+        iframe.setAttribute(
+          'allow',
+          'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
+        );
+        iframe.className = 'question-youtube-embed';
+        parent.replaceChild(iframe, node);
+      } else {
+        parent.removeChild(node);
+      }
+      continue;
+    }
+    if (tag === 'img') {
+      const src = (node.getAttribute('src') || '').trim();
+      if (isAllowedImgSrc(src)) {
+        const img = doc.createElement('img');
+        img.setAttribute('src', src);
+        const alt = node.getAttribute('alt');
+        if (alt) img.setAttribute('alt', alt);
+        img.className = 'question-inline-img';
+        img.setAttribute('decoding', 'async');
+        parent.replaceChild(img, node);
+      } else {
+        parent.removeChild(node);
+      }
+      continue;
+    }
+    if (tag === 'a') {
+      const span = doc.createElement('span');
+      while (node.firstChild) span.appendChild(node.firstChild);
+      parent.replaceChild(span, node);
+      continue;
+    }
+    if (!QUESTION_ALLOWED_TAGS.has(tag)) {
+      if (tag === 'body' || tag === 'html') continue;
+      while (node.firstChild) parent.insertBefore(node.firstChild, node);
+      parent.removeChild(node);
+      continue;
+    }
+    stripUnsafeAttrs(node, tag);
+  }
+
+  return root.innerHTML.trim();
 }
 
 function updateResponsesUI() {
@@ -840,12 +1006,23 @@ function setInitialConnectionStatus() {
   });
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    loadExamFromStorage();
-    setInitialConnectionStatus();
-  });
-} else {
+async function initLivePage() {
+  try {
+    if (window.electronAPI?.getYoutubeEmbedOrigin) {
+      const o = await window.electronAPI.getYoutubeEmbedOrigin();
+      if (o && typeof o === 'string') youtubeEmbedOriginParam = o.replace(/\/$/, '');
+    }
+  } catch (e) {
+    /* keep default origin */
+  }
   loadExamFromStorage();
   setInitialConnectionStatus();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    initLivePage();
+  });
+} else {
+  initLivePage();
 }
