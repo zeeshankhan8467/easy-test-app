@@ -21,8 +21,10 @@ let examStartedAt = null;
 let currentQuestionStartedAtMs = null;
 /** From snapshot: show option breakdown / answers as they arrive */
 let showLiveResponse = false;
-/** From snapshot: when show_live_response is false, reveal breakdown after all students submit per question */
+/** From snapshot: when show_live_response is false, reveal breakdown when this question's timer reaches 0 (not when all students answer) */
 let showResponseAfterCompletion = true;
+/** Per question index: option breakdown revealed after countdown ended for that question */
+let questionStatsRevealedAfterTimer = {};
 /** From snapshot: auto-advance question when time is up or all answered; false = teacher uses Next */
 let questionChangeAutomatic = false;
 
@@ -103,21 +105,29 @@ function totalParticipantCount() {
   return Object.keys(clickerToParticipant).length || 0;
 }
 
-/** All mapped students have submitted for question index qIdx */
-function allStudentsAnsweredForQuestionIndex(qIdx) {
-  const total = totalParticipantCount();
-  if (total <= 0) return false;
-  const map = allResponsesByQuestion[qIdx];
-  if (!map || typeof map !== 'object') return false;
-  return Object.keys(map).length >= total;
-}
-
 /** Show option bars / per-option % and student answers (A–J or 1–10 by question option_display) */
 function shouldRevealOptionStatsForQuestionIndex(qIdx) {
   if (examState === 'ended') return true;
   if (showLiveResponse) return true;
-  if (showResponseAfterCompletion && allStudentsAnsweredForQuestionIndex(qIdx)) return true;
+  if (showResponseAfterCompletion && questionStatsRevealedAfterTimer[qIdx]) return true;
   return false;
+}
+
+/** When there is no per-question countdown, reveal stats immediately for the current question (timer mode only). */
+function applyRevealAfterTimerForCurrentQuestionIfNoCountdown() {
+  if (!showResponseAfterCompletion || showLiveResponse) return;
+  if (perQuestionSeconds > 0) return;
+  questionStatsRevealedAfterTimer[currentIndex] = true;
+  renderQuestion();
+  updateResponsesUI();
+}
+
+function onPerQuestionTimerReachedZero() {
+  if (showResponseAfterCompletion && !showLiveResponse) {
+    questionStatsRevealedAfterTimer[currentIndex] = true;
+  }
+  renderQuestion();
+  updateResponsesUI();
 }
 
 function updateLiveModeHints() {
@@ -126,7 +136,7 @@ function updateLiveModeHints() {
     if (showLiveResponse) {
       parts.push('Option breakdown updates live as students answer.');
     } else if (showResponseAfterCompletion) {
-      parts.push('Option breakdown appears after every student has submitted on this question.');
+      parts.push('Option breakdown appears when this question\'s timer reaches zero.');
     } else {
       parts.push('Option breakdown stays hidden until the exam ends.');
     }
@@ -141,7 +151,7 @@ function updateLiveModeHints() {
     if (showLiveResponse) {
       responsesPanelSubEl.textContent = 'Showing selected options as they arrive.';
     } else if (showResponseAfterCompletion) {
-      responsesPanelSubEl.textContent = 'Selected options shown after all students submit (this question).';
+      responsesPanelSubEl.textContent = 'Selected options shown when the question timer ends.';
     } else {
       responsesPanelSubEl.textContent = 'Selected options hidden until the exam ends.';
     }
@@ -204,12 +214,14 @@ function loadExamFromStorage() {
     console.log(`[EasyTest Live] Q${i + 1} options count=${(q.options || []).length}`, q.options);
   });
   examTitle.textContent = snapshot.title || 'Exam';
-  revisable = !!(snapshot && (snapshot.revisable === true || snapshot.revisable === 'true'));
+  // Accept true/"true"/1/"1" from API so reattempt behavior is reliable across serializers/backends.
+  revisable = snapshotBool(snapshot ? snapshot.revisable : false, false);
   showLiveResponse = snapshotBool(snapshot.show_live_response, false);
   showResponseAfterCompletion = snapshotBool(snapshot.show_response_after_completion, true);
   questionChangeAutomatic = snapshotBool(snapshot.question_change_automatic, false);
   updateLiveModeHints();
   participantNames = {};
+  questionStatsRevealedAfterTimer = {};
   Object.values(clickerToParticipant).forEach(p => { if (p && p.id != null) participantNames[p.id] = p.name || 'Participant'; });
   // Timer: backend sends duration per question in seconds (snapshot.duration) — show this value on the timer
   perQuestionSeconds = 30;
@@ -459,6 +471,17 @@ function isAllowedImgSrc(src) {
   }
 }
 
+/** Video/audio src: http(s) only (no data: — keeps snapshots smaller and avoids XSS). */
+function isAllowedVideoSrc(src) {
+  if (!src || typeof src !== 'string') return false;
+  try {
+    const u = new URL(src.trim());
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch (e) {
+    return false;
+  }
+}
+
 function stripUnsafeAttrs(el, tag) {
   Array.from(el.attributes).forEach((attr) => {
     const n = attr.name.toLowerCase();
@@ -476,7 +499,7 @@ function stripUnsafeAttrs(el, tag) {
 }
 
 /**
- * Allow safe HTML from exam snapshot: YouTube embeds, http(s)/data: images, basic typography.
+ * Allow safe HTML from exam snapshot: YouTube embeds, http(s) video, http(s)/data: images, basic typography.
  * Everything else is stripped or unwrapped to reduce XSS risk.
  */
 function sanitizeQuestionHtml(html) {
@@ -545,6 +568,44 @@ function sanitizeQuestionHtml(html) {
       } else {
         parent.removeChild(node);
       }
+      continue;
+    }
+    if (tag === 'source') {
+      const src = (node.getAttribute('src') || '').trim();
+      if (isAllowedVideoSrc(src)) {
+        const s = doc.createElement('source');
+        s.setAttribute('src', src);
+        const type = node.getAttribute('type');
+        if (type && /^[\w.+\/-;\s=]+$/i.test(type) && type.length < 120) s.setAttribute('type', type);
+        parent.replaceChild(s, node);
+      } else {
+        parent.removeChild(node);
+      }
+      continue;
+    }
+    if (tag === 'video') {
+      let useSrc = (node.getAttribute('src') || '').trim();
+      if (!isAllowedVideoSrc(useSrc)) {
+        const childSources = node.querySelectorAll('source[src]');
+        for (let i = 0; i < childSources.length; i++) {
+          const c = (childSources[i].getAttribute('src') || '').trim();
+          if (isAllowedVideoSrc(c)) {
+            useSrc = c;
+            break;
+          }
+        }
+      }
+      if (!isAllowedVideoSrc(useSrc)) {
+        parent.removeChild(node);
+        continue;
+      }
+      const v = doc.createElement('video');
+      v.setAttribute('src', useSrc);
+      v.setAttribute('controls', 'true');
+      v.setAttribute('playsinline', 'true');
+      v.setAttribute('preload', 'metadata');
+      v.className = 'question-inline-video';
+      parent.replaceChild(v, node);
       continue;
     }
     if (tag === 'a') {
@@ -828,6 +889,7 @@ function startTimer(resume) {
     if (questionTimerSec <= 0) {
       clearInterval(timerInterval);
       timerInterval = null;
+      onPerQuestionTimerReachedZero();
       if (questionChangeAutomatic) nextQuestion();
     }
   }, 1000);
@@ -905,6 +967,7 @@ function nextQuestion() {
     startClickerSessionForCurrentQuestion();
     beginQuestionTiming();
     startTimer(false);
+    applyRevealAfterTimerForCurrentQuestionIfNoCountdown();
   }
 }
 
@@ -927,6 +990,7 @@ async function startClickerSessionForCurrentQuestion() {
     voteType: 10,   // Multiple Choice (SDK: Mode1=1 ABCD / 2=1234 from optionDisplay)
     optionCount,
     optionDisplay,  // 'alpha' | 'numeric' → main process VoteStart2 Mode1
+    revisable,      // Let main process enable clicker-level re-submit when exam is revisable.
     minSelect: 1,
     maxSelect: 1,
   });
@@ -972,6 +1036,7 @@ async function startExam() {
     sessionStatusEl.innerHTML = '<span class="status-dot"></span><span>Active</span>';
   }
   startTimer(false);
+  applyRevealAfterTimerForCurrentQuestionIfNoCountdown();
   // Background sync every 30s
   if (syncInterval) clearInterval(syncInterval);
   syncInterval = setInterval(() => runSync(), 30000);

@@ -752,8 +752,10 @@ ipcMain.handle('sdk:startSession', async (event, settings = {}) => {
       if (cd >= 1 && cd <= 5) mode1 = cd;
     }
     if (mode1 === undefined) mode1 = currentSessionOptionDisplay === 'numeric' ? 2 : 1;
+    const sessionRevisable = !!(settings && (settings.revisable === true || settings.revisable === 'true' || settings.revisable === 1 || settings.revisable === '1'));
     const mode2 = cfg.clickerModifiableAfterSubmit != null && cfg.clickerModifiableAfterSubmit !== ''
-      ? Number(cfg.clickerModifiableAfterSubmit) : 0;
+      ? Number(cfg.clickerModifiableAfterSubmit)
+      : (sessionRevisable ? 1 : 0);
     const mode3 = cfg.clickerClassifiedAfterSubmit != null && cfg.clickerClassifiedAfterSubmit !== ''
       ? Number(cfg.clickerClassifiedAfterSubmit) : 0;
     const mode4 = cfg.clickerLessEnabled != null && cfg.clickerLessEnabled !== ''

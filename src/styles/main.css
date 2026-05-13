@@ -452,6 +452,17 @@ body {
   margin: 0.35rem 0 0.65rem 0;
   object-fit: contain;
 }
+.question-text .question-inline-video,
+.question-text video.question-inline-video,
+.question-text video {
+  display: block;
+  width: 100%;
+  max-width: 560px;
+  max-height: 320px;
+  border-radius: 8px;
+  margin: 0.35rem 0 0.65rem 0;
+  background: #000;
+}
 .options-list {
   display: flex;
   flex-direction: column;
