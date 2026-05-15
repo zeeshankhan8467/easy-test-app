@@ -18,6 +18,13 @@ const attendanceDoneBtn = document.getElementById('attendanceDoneBtn');
 const attendanceRunExamBtn = document.getElementById('attendanceRunExamBtn');
 const attendanceSubmitBtn = document.getElementById('attendanceSubmitBtn');
 const dailyAttendanceBtn = document.getElementById('dailyAttendanceBtn');
+const toggleAllExamsBtn = document.getElementById('toggleAllExamsBtn');
+const filterClassEl = document.getElementById('filterClass');
+const filterSectionEl = document.getElementById('filterSection');
+const filterTeamEl = document.getElementById('filterTeam');
+const clearParticipantFiltersBtn = document.getElementById('clearParticipantFiltersBtn');
+const participantFilterCountEl = document.getElementById('participantFilterCount');
+const participantFiltersEl = document.getElementById('participantFilters');
 
 let attendanceState = {
   active: false,
@@ -30,6 +37,195 @@ let attendanceState = {
   presentIds: new Set(),
   clickerListener: null,
 };
+
+/** Full list from API; dashboard filters to unattempted unless `showAllExams`. */
+let cachedExamsList = [];
+let cachedTotalStudents = 0;
+let showAllExams = false;
+
+/** Participants and per-field roster filter ({class, section, team} read from `extra.*`). */
+let cachedStudents = [];
+const participantFilterState = { class: '', section: '', team: '' };
+
+function readExtraField(p, key) {
+  const extra = p && p.extra;
+  if (!extra || typeof extra !== 'object') return '';
+  const v = extra[key];
+  if (v == null) return '';
+  return String(v).trim();
+}
+
+function distinctSortedExtra(list, key) {
+  const seen = new Set();
+  list.forEach((p) => {
+    const v = readExtraField(p, key);
+    if (v) seen.add(v);
+  });
+  return [...seen].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+}
+
+/** Match against a single dimension; chained dropdowns filter by the others first. */
+function filterStudentsBy(list, omitKey) {
+  return list.filter((p) => {
+    if (omitKey !== 'class' && participantFilterState.class && readExtraField(p, 'class') !== participantFilterState.class) return false;
+    if (omitKey !== 'section' && participantFilterState.section && readExtraField(p, 'section') !== participantFilterState.section) return false;
+    if (omitKey !== 'team' && participantFilterState.team && readExtraField(p, 'team') !== participantFilterState.team) return false;
+    return true;
+  });
+}
+
+function getFilteredStudents() {
+  return filterStudentsBy(cachedStudents, null);
+}
+
+function refreshFilterSelectOptions(selectEl, currentValue, options, allLabel) {
+  if (!selectEl) return;
+  const has = currentValue && options.includes(currentValue);
+  const opts = [`<option value="">${escapeHtml(allLabel)}</option>`];
+  options.forEach((v) => {
+    opts.push(`<option value="${escapeHtml(v)}"${v === currentValue ? ' selected' : ''}>${escapeHtml(v)}</option>`);
+  });
+  if (currentValue && !has) {
+    opts.push(`<option value="${escapeHtml(currentValue)}" selected>${escapeHtml(currentValue)} (no match)</option>`);
+  }
+  selectEl.innerHTML = opts.join('');
+}
+
+function refreshParticipantFilterUI() {
+  if (!participantFiltersEl) return;
+  const hasAnyExtra =
+    cachedStudents.some((p) => readExtraField(p, 'class') || readExtraField(p, 'section') || readExtraField(p, 'team'));
+  participantFiltersEl.classList.toggle('hidden', !hasAnyExtra);
+  if (!hasAnyExtra) return;
+
+  const classOptions = distinctSortedExtra(filterStudentsBy(cachedStudents, 'class'), 'class');
+  const sectionOptions = distinctSortedExtra(filterStudentsBy(cachedStudents, 'section'), 'section');
+  const teamOptions = distinctSortedExtra(filterStudentsBy(cachedStudents, 'team'), 'team');
+
+  refreshFilterSelectOptions(filterClassEl, participantFilterState.class, classOptions, 'All classes');
+  refreshFilterSelectOptions(filterSectionEl, participantFilterState.section, sectionOptions, 'All sections');
+  refreshFilterSelectOptions(filterTeamEl, participantFilterState.team, teamOptions, 'All teams');
+
+  const anyActive = !!(participantFilterState.class || participantFilterState.section || participantFilterState.team);
+  if (clearParticipantFiltersBtn) clearParticipantFiltersBtn.classList.toggle('hidden', !anyActive);
+
+  if (participantFilterCountEl) {
+    const shown = getFilteredStudents().length;
+    const total = cachedStudents.length;
+    participantFilterCountEl.textContent =
+      anyActive ? `Showing ${shown} of ${total}` : `${total} participant${total === 1 ? '' : 's'}`;
+  }
+}
+
+function isExamAttempted(exam) {
+  const n = Number(exam.attempt_count);
+  if (!Number.isNaN(n) && n > 0) return true;
+  if (exam.status === 'completed') return true;
+  return false;
+}
+
+function updateToggleAllExamsButton() {
+  if (!toggleAllExamsBtn) return;
+  const hasAttempted = cachedExamsList.some(isExamAttempted);
+  toggleAllExamsBtn.classList.toggle('hidden', !hasAttempted);
+  toggleAllExamsBtn.textContent = showAllExams ? 'Show unattempted only' : 'Show all exams';
+  toggleAllExamsBtn.setAttribute('aria-pressed', showAllExams ? 'true' : 'false');
+}
+
+function renderExamListFromCache() {
+  if (!examListEl || !noExamsEl) return;
+
+  const exams = showAllExams ? [...cachedExamsList] : cachedExamsList.filter((e) => !isExamAttempted(e));
+  const totalStudents = cachedTotalStudents;
+
+  updateToggleAllExamsButton();
+
+  if (cachedExamsList.length === 0) {
+    noExamsEl.textContent = 'No exams found. Create an exam in the EasyTest web app first.';
+    noExamsEl.classList.remove('hidden');
+    examListEl.innerHTML = '';
+    if (toggleAllExamsBtn) toggleAllExamsBtn.classList.add('hidden');
+    return;
+  }
+
+  if (exams.length === 0) {
+    noExamsEl.textContent =
+      'No unattempted exams. Click Show all exams to list exams that already have participant attempts or are marked completed.';
+    noExamsEl.classList.remove('hidden');
+    examListEl.innerHTML = '';
+    return;
+  }
+
+  noExamsEl.classList.add('hidden');
+
+  function examSyncReady(exam) {
+    const s = exam.status;
+    return s === 'frozen' || s === 'completed' || exam.frozen === true;
+  }
+
+  function statusBadge(exam) {
+    const s = exam.status || 'draft';
+    if (s === 'frozen' || exam.frozen) {
+      return '<span class="status-badge status-frozen">Frozen</span>';
+    }
+    if (s === 'completed') {
+      return '<span class="status-badge status-completed">Completed</span>';
+    }
+    return '<span class="status-badge status-draft">Draft</span>';
+  }
+
+  examListEl.innerHTML = exams.map((exam) => {
+    const enrolled = exam.participant_count ?? 0;
+    const displayCount = enrolled > 0 ? enrolled : totalStudents;
+    const syncNote = examSyncReady(exam)
+      ? ''
+      : '<div class="exam-warn">Freeze this exam in the EasyTest web app so clicker results can sync to the server.</div>';
+    const attemptMeta =
+      showAllExams && isExamAttempted(exam)
+        ? ` · Live attempts: ${exam.attempt_count != null ? Number(exam.attempt_count) : '—'}`
+        : '';
+    return `
+    <div class="exam-item" data-exam-id="${exam.id}">
+      <div>
+        <h3>${escapeHtml(exam.title)}</h3>
+        <div class="meta">Questions: ${exam.question_count ?? 0} · Participants: ${displayCount}${attemptMeta}</div>
+        ${syncNote}
+      </div>
+      <div class="actions">
+        ${statusBadge(exam)}
+        <button type="button" class="btn btn-primary run-exam-btn" data-exam-id="${exam.id}">Run exam</button>
+      </div>
+    </div>
+  `;
+  }).join('');
+
+  examListEl.querySelectorAll('.run-exam-btn').forEach((btn) => {
+    btn.addEventListener('click', () => runExam(btn.dataset.examId));
+  });
+}
+
+async function loadExams() {
+  const [examsResult, participantsResult] = await Promise.all([
+    window.electronAPI.fetchExams(),
+    window.electronAPI.fetchParticipants(null),
+  ]);
+  if (!examsResult.success) {
+    if (isAuthError(examsResult)) {
+      await window.electronAPI.nav('login');
+      return;
+    }
+    cachedExamsList = [];
+    cachedTotalStudents = 0;
+    examListEl.innerHTML = `<div class="no-exams">${escapeHtml(examsResult.error || 'Failed to load exams')}</div>`;
+    noExamsEl.classList.add('hidden');
+    if (toggleAllExamsBtn) toggleAllExamsBtn.classList.add('hidden');
+    return;
+  }
+
+  cachedExamsList = examsResult.data || [];
+  cachedTotalStudents = Array.isArray(participantsResult?.data) ? participantsResult.data.length : 0;
+  renderExamListFromCache();
+}
 
 function localISODate(d = new Date()) {
   const y = d.getFullYear();
@@ -62,74 +258,6 @@ async function loadUser() {
   return true;
 }
 
-async function loadExams() {
-  const [examsResult, participantsResult] = await Promise.all([
-    window.electronAPI.fetchExams(),
-    window.electronAPI.fetchParticipants(null),
-  ]);
-  if (!examsResult.success) {
-    if (isAuthError(examsResult)) {
-      await window.electronAPI.nav('login');
-      return;
-    }
-    examListEl.innerHTML = `<div class="no-exams">${escapeHtml(examsResult.error || 'Failed to load exams')}</div>`;
-    noExamsEl.classList.add('hidden');
-    return;
-  }
-
-  // Show all exams from API. Previously we only showed status==='frozen', which hid draft exams
-  // even though the list API returned them (see main process logs).
-  const exams = examsResult.data || [];
-  const totalStudents = Array.isArray(participantsResult?.data) ? participantsResult.data.length : 0;
-  if (exams.length === 0) {
-    noExamsEl.classList.remove('hidden');
-    examListEl.innerHTML = '';
-    return;
-  }
-  noExamsEl.classList.add('hidden');
-
-  function examSyncReady(exam) {
-    const s = exam.status;
-    return s === 'frozen' || s === 'completed' || exam.frozen === true;
-  }
-
-  function statusBadge(exam) {
-    const s = exam.status || 'draft';
-    if (s === 'frozen' || exam.frozen) {
-      return '<span class="status-badge status-frozen">Frozen</span>';
-    }
-    if (s === 'completed') {
-      return '<span class="status-badge status-completed">Completed</span>';
-    }
-    return '<span class="status-badge status-draft">Draft</span>';
-  }
-
-  examListEl.innerHTML = exams.map(exam => {
-    const enrolled = exam.participant_count ?? 0;
-    const displayCount = enrolled > 0 ? enrolled : totalStudents;
-    const syncNote = examSyncReady(exam)
-      ? ''
-      : '<div class="exam-warn">Freeze this exam in the EasyTest web app so clicker results can sync to the server.</div>';
-    return `
-    <div class="exam-item" data-exam-id="${exam.id}">
-      <div>
-        <h3>${escapeHtml(exam.title)}</h3>
-        <div class="meta">Questions: ${exam.question_count ?? 0} · Participants: ${displayCount}</div>
-        ${syncNote}
-      </div>
-      <div class="actions">
-        ${statusBadge(exam)}
-        <button type="button" class="btn btn-primary run-exam-btn" data-exam-id="${exam.id}">Run exam</button>
-      </div>
-    </div>
-  `;
-  }).join('');
-
-  examListEl.querySelectorAll('.run-exam-btn').forEach(btn => {
-    btn.addEventListener('click', () => runExam(btn.dataset.examId));
-  });
-}
-
 async function loadStudents() {
   if (!studentListEl) return;
   const result = await window.electronAPI.fetchParticipants(null);
@@ -138,14 +266,36 @@ async function loadStudents() {
       await window.electronAPI.nav('login');
       return;
     }
+    cachedStudents = [];
     studentListEl.innerHTML = `<div class="no-exams">${escapeHtml(result.error || 'Failed to load students')}</div>`;
     if (noStudentsEl) noStudentsEl.classList.add('hidden');
+    if (participantFiltersEl) participantFiltersEl.classList.add('hidden');
     return;
   }
 
-  const students = result.data || [];
-  if (students.length === 0) {
-    if (noStudentsEl) noStudentsEl.classList.remove('hidden');
+  cachedStudents = result.data || [];
+  renderStudentsFromCache();
+}
+
+function renderStudentsFromCache() {
+  if (!studentListEl) return;
+  refreshParticipantFilterUI();
+
+  if (cachedStudents.length === 0) {
+    if (noStudentsEl) {
+      noStudentsEl.textContent = 'No participants yet. Add them in the EasyTest web app.';
+      noStudentsEl.classList.remove('hidden');
+    }
+    studentListEl.innerHTML = '';
+    return;
+  }
+
+  const filtered = getFilteredStudents();
+  if (filtered.length === 0) {
+    if (noStudentsEl) {
+      noStudentsEl.textContent = 'No participants match the selected class / section / team. Clear filters to see everyone.';
+      noStudentsEl.classList.remove('hidden');
+    }
     studentListEl.innerHTML = '';
     return;
   }
@@ -156,7 +306,7 @@ async function loadStudents() {
       <span class="student-col email">Email</span>
       <span class="student-col clicker">Clicker ID</span>
     </div>
-    ${students.map(s => `
+    ${filtered.map(s => `
       <div class="student-item">
         <span class="student-col name">${escapeHtml(s.name || '—')}</span>
         <span class="student-col email">${escapeHtml(s.email || '—')}</span>
@@ -227,6 +377,15 @@ function onAttendanceClickerResponse(data) {
   }
 }
 
+/** Human-readable summary of the currently selected Class/Section/Team filters. */
+function activeParticipantFilterLabel() {
+  const parts = [];
+  if (participantFilterState.class) parts.push(`Class ${participantFilterState.class}`);
+  if (participantFilterState.section) parts.push(`Section ${participantFilterState.section}`);
+  if (participantFilterState.team) parts.push(`Team ${participantFilterState.team}`);
+  return parts.join(' · ');
+}
+
 async function openDailyAttendance() {
   const partResult = await window.electronAPI.fetchParticipants(null);
   if (!partResult.success) {
@@ -239,8 +398,22 @@ async function openDailyAttendance() {
   }
 
   const allParticipants = partResult.data || [];
+  // Honor the Class/Section/Team dropdowns from the dashboard roster so
+  // attendance is taken only for the currently selected cohort.
+  const filteredParticipants = filterStudentsBy(allParticipants, null);
+  const filterLabel = activeParticipantFilterLabel();
+
+  if (!filteredParticipants.length) {
+    alert(
+      filterLabel
+        ? `No participants match the selected filter (${filterLabel}). Clear the filter or pick a different Class/Section/Team.`
+        : 'No participants found. Add students in the EasyTest web app first.'
+    );
+    return;
+  }
+
   const clickerToParticipant = {};
-  allParticipants.forEach(p => {
+  filteredParticipants.forEach(p => {
     if (p.clicker_id == null || p.clicker_id === '') return;
     const info = { id: p.id, name: p.name, email: p.email };
     const str = String(p.clicker_id).trim();
@@ -252,7 +425,7 @@ async function openDailyAttendance() {
 
   const uniqueParticipants = [];
   const seenIds = new Set();
-  allParticipants.forEach(p => {
+  filteredParticipants.forEach(p => {
     if (!p || p.id == null) return;
     if (seenIds.has(p.id)) return;
     seenIds.add(p.id);
@@ -270,13 +443,19 @@ async function openDailyAttendance() {
     clickerToParticipant,
     presentIds: new Set(),
     clickerListener: null,
+    filterLabel,
   };
 
-  if (attendanceModalTitle) attendanceModalTitle.textContent = 'Attendance — ' + dateStr;
+  if (attendanceModalTitle) {
+    attendanceModalTitle.textContent = filterLabel
+      ? `Attendance — ${dateStr} · ${filterLabel}`
+      : `Attendance — ${dateStr}`;
+  }
   const hintEl = document.querySelector('.attendance-modal-hint');
   if (hintEl) {
+    const scopeHint = filterLabel ? ` Scope: ${filterLabel} (${uniqueParticipants.length} student${uniqueParticipants.length === 1 ? '' : 's'}).` : '';
     hintEl.textContent =
-      'Students with clickers press any key (A–D) to be marked present. Click Submit attendance to save today\'s roster to the server (no exam).';
+      'Students with clickers press any key (A–D) to be marked present. Click Submit attendance to save today\'s roster to the server (no exam).' + scopeHint;
   }
   if (attendanceSubmitBtn) attendanceSubmitBtn.classList.remove('hidden');
   if (attendanceRunExamBtn) attendanceRunExamBtn.classList.add('hidden');
@@ -387,10 +566,11 @@ async function submitDailyAttendance() {
 
 async function runExam(examId) {
   const examIdNum = parseInt(examId, 10);
-  const [snapResult, partResult, allPartResult] = await Promise.all([
+  // Only fetch participants ADDED to this exam (ExamParticipant rows). This
+  // restricts the live page so unassigned clickers/students can't submit.
+  const [snapResult, partResult] = await Promise.all([
     window.electronAPI.fetchExamSnapshot(examIdNum),
-    window.electronAPI.fetchParticipants(examIdNum),
-    window.electronAPI.fetchParticipants(null),
+    window.electronAPI.fetchExamParticipants(examIdNum),
   ]);
 
   if (!snapResult.success) {
@@ -413,10 +593,20 @@ async function runExam(examId) {
     });
   }
   const participants = partResult.success ? (partResult.data || []) : [];
-  const allParticipants = allPartResult.success ? (allPartResult.data || []) : [];
+  if (!partResult.success) {
+    console.warn('[EasyTest Live] fetchExamParticipants failed:', partResult.error);
+  }
+  if (!participants.length) {
+    const proceed = confirm(
+      'No participants have been added to this exam yet.\n\n' +
+      'Open the EasyTest web app and add students to this exam before running it. ' +
+      'Continue anyway? (No clicker responses will be accepted.)'
+    );
+    if (!proceed) return;
+  }
   const clickerToParticipant = {};
-  // Build map from ALL participants with a clicker_id so we match clicker 1 -> zeeshan even if not yet in this exam
-  allParticipants.forEach(p => {
+  // Build clicker map ONLY from participants added to this exam.
+  participants.forEach(p => {
     if (p.clicker_id == null || p.clicker_id === '') return;
     const info = { id: p.id, name: p.name, email: p.email };
     const str = String(p.clicker_id).trim();
@@ -425,12 +615,24 @@ async function runExam(examId) {
     const num = Number(p.clicker_id);
     if (!isNaN(num)) clickerToParticipant[num] = info;
   });
+  console.log('[EasyTest Live] runExam: exam-only participants=', participants.length, ', clickers mapped=', Object.keys(clickerToParticipant).length);
+
+  const user = await window.electronAPI.getUser();
+  let teacherName = 'Instructor';
+  if (user && typeof user === 'object') {
+    teacherName = user.first_name && user.last_name
+      ? `${user.first_name} ${user.last_name}`.trim()
+      : (user.first_name || user.last_name || user.email || user.username || user.displayName || 'Instructor');
+  } else if (typeof user === 'string' && user.trim()) {
+    teacherName = user.trim();
+  }
 
   sessionStorage.setItem('easytest_live_exam', JSON.stringify({
     examId: examIdNum,
     snapshot,
     participants,
     clickerToParticipant,
+    teacherName,
   }));
   await window.electronAPI.nav('live');
 }
@@ -449,6 +651,28 @@ if (attendanceDoneBtn) attendanceDoneBtn.addEventListener('click', () => closeAt
 if (attendanceRunExamBtn) attendanceRunExamBtn.addEventListener('click', () => closeAttendance(true));
 if (attendanceSubmitBtn) attendanceSubmitBtn.addEventListener('click', () => submitDailyAttendance());
 if (dailyAttendanceBtn) dailyAttendanceBtn.addEventListener('click', () => openDailyAttendance());
+if (toggleAllExamsBtn) {
+  toggleAllExamsBtn.addEventListener('click', () => {
+    showAllExams = !showAllExams;
+    renderExamListFromCache();
+  });
+}
+
+function onParticipantFilterChange(key, value) {
+  participantFilterState[key] = (value || '').trim();
+  renderStudentsFromCache();
+}
+if (filterClassEl) filterClassEl.addEventListener('change', (e) => onParticipantFilterChange('class', e.target.value));
+if (filterSectionEl) filterSectionEl.addEventListener('change', (e) => onParticipantFilterChange('section', e.target.value));
+if (filterTeamEl) filterTeamEl.addEventListener('change', (e) => onParticipantFilterChange('team', e.target.value));
+if (clearParticipantFiltersBtn) {
+  clearParticipantFiltersBtn.addEventListener('click', () => {
+    participantFilterState.class = '';
+    participantFilterState.section = '';
+    participantFilterState.team = '';
+    renderStudentsFromCache();
+  });
+}
 
 (async function init() {
   const ok = await loadUser();

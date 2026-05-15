@@ -15,7 +15,8 @@ let timerInterval = null;
 let syncInterval = null;
 let perQuestionSeconds = 30; // default; 0 = no auto-advance
 let nextQuestionTimeout = null; // for auto-advance when all submitted
-let revisable = false; // from snapshot: if true, students can change their answer (reattempt)
+/** Exam-wide reattempt flag (snapshot.revisable). Overall guard: if false, NO question is revisable. */
+let revisable = false;
 let examStartedAt = null;
 /** Wall-clock ms when voting started for the current question (clicker session active). */
 let currentQuestionStartedAtMs = null;
@@ -32,13 +33,13 @@ let questionChangeAutomatic = false;
 let youtubeEmbedOriginParam = 'https://easytestlive.com';
 
 const timerDisplay = document.getElementById('timerDisplay');
+const teacherNameEl = document.getElementById('teacherName');
 const examTitle = document.getElementById('examTitle');
 const connectionStatus = document.getElementById('connectionStatus');
 const startBtn = document.getElementById('startBtn');
 const pauseBtn = document.getElementById('pauseBtn');
 const nextBtn = document.getElementById('nextBtn');
 const endBtn = document.getElementById('endBtn');
-const fullscreenBtn = document.getElementById('fullscreenBtn');
 const backLink = document.getElementById('backLink');
 const responseCount = document.getElementById('responseCount');
 const totalStudentsEl = document.getElementById('totalStudents');
@@ -46,6 +47,7 @@ const responsePercentEl = document.getElementById('responsePercent');
 const responsesListEl = document.getElementById('responsesList');
 const syncStatus = document.getElementById('syncStatus');
 const questionNumber = document.getElementById('questionNumber');
+const questionReviseTagEl = document.getElementById('questionReviseTag');
 const questionText = document.getElementById('questionText');
 const questionTypeEl = document.getElementById('questionType');
 const optionsList = document.getElementById('optionsList');
@@ -103,6 +105,18 @@ function secondsSinceCurrentQuestionStart(answerTimestampMs) {
 
 function totalParticipantCount() {
   return Object.keys(clickerToParticipant).length || 0;
+}
+
+/** Effective reattempt for a question = exam-level `revisable` AND that question's `allow_revise`. */
+function isQuestionRevisable(qIdx) {
+  if (!revisable) return false;
+  const q = questions[qIdx];
+  if (!q) return revisable;
+  return q.allow_revise !== false;
+}
+
+function isCurrentQuestionRevisable() {
+  return isQuestionRevisable(currentIndex);
 }
 
 /** Show option bars / per-option % and student answers (A–J or 1–10 by question option_display) */
@@ -206,6 +220,9 @@ function loadExamFromStorage() {
     }
     if (!Array.isArray(o)) o = [];
     q.options = o;
+    // Per-question revise flag (backend ExamQuestion.allow_revise). Default true so older
+    // snapshots without this field keep current behavior (gated by exam-wide revisable).
+    q.allow_revise = snapshotBool(q.allow_revise, true);
   });
   // Debug: what live page has after load (open DevTools on the live window)
   console.log('[EasyTest Live] Loaded exam from storage. Snapshot:', data.snapshot);
@@ -213,7 +230,11 @@ function loadExamFromStorage() {
   questions.forEach((q, i) => {
     console.log(`[EasyTest Live] Q${i + 1} options count=${(q.options || []).length}`, q.options);
   });
-  examTitle.textContent = snapshot.title || 'Exam';
+  if (examTitle) {
+    examTitle.textContent = snapshot.title || 'Exam';
+    examTitle.title = snapshot.title || '';
+  }
+  if (teacherNameEl) teacherNameEl.textContent = data.teacherName || 'Instructor';
   // Accept true/"true"/1/"1" from API so reattempt behavior is reliable across serializers/backends.
   revisable = snapshotBool(snapshot ? snapshot.revisable : false, false);
   showLiveResponse = snapshotBool(snapshot.show_live_response, false);
@@ -318,6 +339,10 @@ function renderQuestion() {
 
   if (questionNumber) questionNumber.textContent = `Q${currentIndex + 1}`;
   if (questionTypeEl) questionTypeEl.textContent = (q.type || 'MCQ').toUpperCase();
+  if (questionReviseTagEl) {
+    const showReviseTag = revisable && q && q.allow_revise === false;
+    questionReviseTagEl.classList.toggle('hidden', !showReviseTag);
+  }
   if (questionText) {
     const raw = q.text || '';
     const safe = sanitizeQuestionHtml(raw);
@@ -816,8 +841,10 @@ function onClickerResponse(data) {
     return;
   }
 
-  // When revisable is false: one response per device per question. When revisable is true: allow reattempt (overwrite).
-  if (!revisable && responses[deviceId]) return;
+  // Per-question reattempt gate. Effective = exam.revisable AND question.allow_revise.
+  // When NOT revisable for this question: keep the first answer and ignore later presses.
+  const questionRevisable = isCurrentQuestionRevisable();
+  if (!questionRevisable && responses[deviceId]) return;
 
   const timestamp = data.timestamp || Date.now();
   const timeTaken = secondsSinceCurrentQuestionStart(timestamp);
@@ -846,7 +873,8 @@ function onClickerResponse(data) {
   const participantId = participant.id;
   const alreadyHad = !!allResponsesByQuestion[currentIndex][participantId];
   allResponsesByQuestion[currentIndex][participantId] = { answer, timestamp, time_taken: timeTaken };
-  if (revisable || !alreadyHad) {
+  // Sync overwrites only when this question is revisable; otherwise only the first answer is synced.
+  if (questionRevisable || !alreadyHad) {
     persistPending();
     if (payloadItem) {
       const item = { ...payloadItem, participant_id: participantId };
@@ -985,12 +1013,14 @@ function getCurrentQuestionOptionCount() {
 async function startClickerSessionForCurrentQuestion() {
   const optionCount = getCurrentQuestionOptionCount();
   const optionDisplay = getCurrentQuestionOptionDisplay();
+  // Per-question SDK reattempt flag: hardware lock when this question disallows revise.
+  const questionRevisable = isCurrentQuestionRevisable();
   const result = await window.electronAPI.startSession({
     baseId: 0,
     voteType: 10,   // Multiple Choice (SDK: Mode1=1 ABCD / 2=1234 from optionDisplay)
     optionCount,
     optionDisplay,  // 'alpha' | 'numeric' → main process VoteStart2 Mode1
-    revisable,      // Let main process enable clicker-level re-submit when exam is revisable.
+    revisable: questionRevisable,
     minSelect: 1,
     maxSelect: 1,
   });
@@ -1028,7 +1058,7 @@ async function startExam() {
   pauseBtn.classList.remove('hidden');
   nextBtn.classList.remove('hidden');
   endBtn.classList.remove('hidden');
-  connectionStatus.textContent = 'Clicker connected';
+  connectionStatus.textContent = 'Remote Connected';
   connectionStatus.classList.remove('disconnected');
   connectionStatus.classList.add('connected');
   if (sessionStatusEl) {
@@ -1119,14 +1149,16 @@ async function endExam() {
   }
 }
 
-backLink.addEventListener('click', async (e) => {
-  e.preventDefault();
-  if (examState === 'running' || examState === 'paused') {
-    if (!confirm('End exam and go back? Responses will be synced.')) return;
-    await endExam();
-  }
-  window.electronAPI.nav('dashboard');
-});
+if (backLink) {
+  backLink.addEventListener('click', async (e) => {
+    e.preventDefault();
+    if (examState === 'running' || examState === 'paused') {
+      if (!confirm('End exam and go back? Responses will be synced.')) return;
+      await endExam();
+    }
+    window.electronAPI.nav('dashboard');
+  });
+}
 
 startBtn.addEventListener('click', startExam);
 pauseBtn.addEventListener('click', () => {
@@ -1139,18 +1171,14 @@ endBtn.addEventListener('click', async () => {
   await endExam();
 });
 
-fullscreenBtn.addEventListener('click', () => {
-  document.getElementById('liveExam').classList.toggle('fullscreen');
-});
-
 window.electronAPI.onClickerResponse(onClickerResponse);
 window.electronAPI.onConnectEvent((data) => {
   if (data.mode === 1) {
-    connectionStatus.textContent = 'Clicker connected';
+    connectionStatus.textContent = 'Remote Connected';
     connectionStatus.classList.remove('disconnected');
     connectionStatus.classList.add('connected');
   } else {
-    connectionStatus.textContent = 'Clicker disconnected';
+    connectionStatus.textContent = 'Remote Disconnected';
     connectionStatus.classList.remove('connected');
     connectionStatus.classList.add('disconnected');
   }
@@ -1160,11 +1188,11 @@ function setInitialConnectionStatus() {
   window.electronAPI.getSDKStatus().then((s) => {
     if (!connectionStatus) return;
     if (s.connected) {
-      connectionStatus.textContent = 'Clicker connected';
+      connectionStatus.textContent = 'Remote Connected';
       connectionStatus.classList.remove('disconnected');
       connectionStatus.classList.add('connected');
     } else {
-      connectionStatus.textContent = 'Clicker disconnected';
+      connectionStatus.textContent = 'Remote Disconnected';
       connectionStatus.classList.remove('connected');
       connectionStatus.classList.add('disconnected');
     }

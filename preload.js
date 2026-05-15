@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   fetchExams: () => ipcRenderer.invoke('api:fetchExams'),
   fetchExamSnapshot: (examId) => ipcRenderer.invoke('api:fetchExamSnapshot', examId),
   fetchParticipants: (examId) => ipcRenderer.invoke('api:fetchParticipants', examId),
+  /** Only participants linked to this exam via ExamParticipant (?exam_only=1). */
+  fetchExamParticipants: (examId) => ipcRenderer.invoke('api:fetchExamParticipants', examId),
   saveDailyAttendance: (payload) => ipcRenderer.invoke('api:saveDailyAttendance', payload),
   syncLiveResults: (payload) => ipcRenderer.invoke('api:syncLiveResults', payload),
 

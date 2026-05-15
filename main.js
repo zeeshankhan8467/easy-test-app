@@ -616,6 +616,27 @@ ipcMain.handle('api:fetchParticipants', async (event, examId) => {
   }
 });
 
+/**
+ * Fetch ONLY the participants added to the given exam via ExamParticipant.
+ * Backend honors `?exam_id=X&exam_only=1`. Used by the live exam page so
+ * unassigned clickers/students can't submit responses on this exam.
+ */
+ipcMain.handle('api:fetchExamParticipants', async (event, examId) => {
+  if (!getStore().token) return { success: false, error: 'Not authenticated' };
+  if (examId == null) return { success: false, error: 'examId is required' };
+  try {
+    const url = `${getApiBaseUrl()}participants/?exam_id=${examId}&exam_only=1`;
+    const response = await makeRequest(url, { headers: authHeaders() });
+    if (response.ok) {
+      const list = Array.isArray(response.data) ? response.data : (response.data?.results || []);
+      return { success: true, data: list };
+    }
+    return { success: false, error: response.data?.detail || 'Failed to fetch exam participants' };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 /** Save daily attendance (no exam): POST /attendance/day/save/ */
 ipcMain.handle('api:saveDailyAttendance', async (event, { date, entries }) => {
   if (!getStore().token) return { success: false, error: 'Not authenticated' };

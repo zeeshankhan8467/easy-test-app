@@ -9,44 +9,53 @@
 </head>
 <body>
   <div class="live-exam" id="liveExam">
-    <div class="live-header">
-      <div class="title" id="examTitle">—</div>
-      <div class="connection-status disconnected" id="connectionStatus">Clicker disconnected</div>
-      <a href="#" class="btn btn-secondary" id="backLink">← Back to dashboard</a>
+    <div class="live-top-bar">
+      <div class="live-header live-header-row">
+        <div class="live-header-main">
+          <div class="live-header-identity">
+            <span class="live-teacher-name" id="teacherName">—</span>
+            <span class="live-exam-title" id="examTitle">—</span>
+          </div>
+          <div class="session-controls session-controls-inline">
+            <div class="control-group">
+              <!-- <span class="control-label">Timer</span> -->
+              <div class="timer-display" id="timerDisplay">00:00</div>
+            </div>
+            <div class="control-group">
+              <!-- <span class="control-label">Session</span> -->
+              <div id="sessionStatus" class="status-badge status-pending">
+                <span class="status-dot"></span>
+                <span>Ready</span>
+              </div>
+            </div>
+            <div class="control-buttons">
+              <button type="button" class="btn btn-primary" id="startBtn">Start</button>
+              <button type="button" class="btn btn-secondary hidden" id="pauseBtn">Pause</button>
+              <button type="button" class="btn btn-secondary hidden" id="nextBtn">Next</button>
+              <button type="button" class="btn btn-danger hidden" id="endBtn">End exam</button>
+            </div>
+          </div>
+        </div>
+        <div class="live-header-actions">
+          <div class="connection-status disconnected" id="connectionStatus">Remote Disconnected</div>
+          <a href="#" class="live-home-btn" id="backLink" aria-label="Back to dashboard" title="Back to dashboard">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          </a>
+        </div>
+      </div>
+      <p class="live-mode-hint live-mode-hint-bar" id="liveModeHint" aria-live="polite"></p>
     </div>
 
     <main class="main-content">
       <!-- Question Panel (same structure as acadally session) -->
       <div class="question-panel">
-        <!-- Session Controls -->
-        <div class="session-controls">
-          <div class="control-group">
-            <span class="control-label">Timer</span>
-            <div class="timer-display" id="timerDisplay">00:00</div>
-          </div>
-          <div class="control-group" style="flex: 1;">
-            <span class="control-label">Session Status</span>
-            <div id="sessionStatus" class="status-badge status-pending">
-              <span class="status-dot"></span>
-              <span>Ready</span>
-            </div>
-          </div>
-          <div class="control-buttons">
-            <button type="button" class="btn btn-primary" id="startBtn">Start</button>
-            <button type="button" class="btn btn-secondary hidden" id="pauseBtn">Pause</button>
-            <button type="button" class="btn btn-secondary hidden" id="nextBtn">Next</button>
-            <button type="button" class="btn btn-danger hidden" id="endBtn">End exam</button>
-            <button type="button" class="btn btn-secondary" id="fullscreenBtn">Full screen</button>
-          </div>
-          <p class="live-mode-hint" id="liveModeHint" aria-live="polite"></p>
-        </div>
-
         <!-- Question Card (same design as acadally) -->
         <div class="question-card" id="questionCard">
           <div id="questionContent">
             <div class="question-meta">
               <span class="question-badge" id="questionNumber">Q1</span>
               <span class="question-type" id="questionType">MCQ</span>
+              <span class="question-revise-tag hidden" id="questionReviseTag" title="Students cannot change their answer once submitted on this question.">No revise</span>
             </div>
             <div class="question-text" id="questionText">—</div>
             <div class="options-list" id="optionsList"></div>

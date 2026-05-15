@@ -25,7 +25,10 @@
     <p class="meta dashboard-intro">Take <strong>daily attendance</strong> with your participant list (no exam), or select a <strong>frozen</strong> exam to run live. Connect the clicker base station first.</p>
 
     <section class="dashboard-section">
-      <h2 class="section-heading">Your exams</h2>
+      <div class="dashboard-exams-head">
+        <h2 class="section-heading">Your exams</h2>
+        <button type="button" class="btn btn-secondary hidden" id="toggleAllExamsBtn" aria-pressed="false">Show all exams</button>
+      </div>
       <div id="examList" class="exam-list"></div>
       <div id="noExams" class="no-exams hidden">No exams found. Create an exam in the EasyTest web app first.</div>
     </section>
@@ -68,6 +71,28 @@
         <button type="button" class="btn btn-secondary" id="dailyAttendanceBtn">Take attendance (today)</button>
       </div>
       <p class="meta section-hint">Uses your full participant list from the web app (same as teacher roster). Saves to the server by date — no exam needed.</p>
+      <div class="participant-filters" id="participantFilters">
+        <label class="participant-filter">
+          <span class="participant-filter-label">Class</span>
+          <select id="filterClass" class="participant-filter-select">
+            <option value="">All classes</option>
+          </select>
+        </label>
+        <label class="participant-filter">
+          <span class="participant-filter-label">Section</span>
+          <select id="filterSection" class="participant-filter-select">
+            <option value="">All sections</option>
+          </select>
+        </label>
+        <label class="participant-filter">
+          <span class="participant-filter-label">Team</span>
+          <select id="filterTeam" class="participant-filter-select">
+            <option value="">All teams</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-outline participant-filter-clear hidden" id="clearParticipantFiltersBtn">Clear</button>
+        <span class="participant-filter-count" id="participantFilterCount" aria-live="polite"></span>
+      </div>
       <div id="studentList" class="student-list"></div>
       <div id="noStudents" class="no-exams hidden">No participants yet. Add them in the EasyTest web app.</div>
     </section>
