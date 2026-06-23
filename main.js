@@ -644,6 +644,23 @@ ipcMain.handle('api:saveDailyAttendance', async (event, { date, entries }) => {
   if (!Array.isArray(entries) || entries.length === 0) {
     return { success: false, error: 'No attendance entries to save' };
   }
+  const counts = entries.reduce(
+    (acc, e) => {
+      const s = (e && typeof e.status === 'string') ? e.status.toLowerCase() : '';
+      if (s === 'present') acc.present++;
+      else if (s === 'absent') acc.absent++;
+      else if (s === 'unmarked') acc.unmarked++;
+      else acc.other++;
+      return acc;
+    },
+    { present: 0, absent: 0, unmarked: 0, other: 0 }
+  );
+  log('Daily attendance submit', { date, total: entries.length, ...counts });
+  console.log(
+    `[EasyTest Live] Attendance submit: date=${date}, total=${entries.length} ` +
+    `(present=${counts.present}, absent=${counts.absent}, unmarked=${counts.unmarked}` +
+    (counts.other ? `, other=${counts.other}` : '') + ')'
+  );
   try {
     const response = await makeRequest(`${getApiBaseUrl()}attendance/day/save/`, {
       method: 'POST',
@@ -651,6 +668,10 @@ ipcMain.handle('api:saveDailyAttendance', async (event, { date, entries }) => {
       body: JSON.stringify({ date, entries }),
     });
     if (response.ok) {
+      const saved = response.data && response.data.saved != null ? response.data.saved : entries.length;
+      const errCount = Array.isArray(response.data?.errors) ? response.data.errors.length : 0;
+      log('Daily attendance saved', { date, saved, errors: errCount });
+      console.log(`[EasyTest Live] Attendance saved: date=${date}, saved=${saved}, errors=${errCount}`);
       return { success: true, data: response.data };
     }
     const msg = response.data?.error || response.data?.detail || 'Failed to save attendance';

@@ -25,6 +25,7 @@ const filterTeamEl = document.getElementById('filterTeam');
 const clearParticipantFiltersBtn = document.getElementById('clearParticipantFiltersBtn');
 const participantFilterCountEl = document.getElementById('participantFilterCount');
 const participantFiltersEl = document.getElementById('participantFilters');
+const refreshBtn = document.getElementById('refreshBtn');
 
 let attendanceState = {
   active: false,
@@ -673,6 +674,24 @@ if (clearParticipantFiltersBtn) {
     renderStudentsFromCache();
   });
 }
+
+/** Re-fetch exams + participants and re-check base station status. */
+async function refreshDashboard() {
+  if (!refreshBtn) return;
+  if (refreshBtn.disabled) return;
+  refreshBtn.disabled = true;
+  refreshBtn.classList.add('is-loading');
+  try {
+    const statusPromise = window.electronAPI.getSDKStatus().then((s) => updateBaseStationStatus(!!s.connected)).catch(() => {});
+    await Promise.all([loadExams(), loadStudents(), statusPromise]);
+  } catch (e) {
+    console.warn('[EasyTest Live] refreshDashboard:', e);
+  } finally {
+    refreshBtn.classList.remove('is-loading');
+    refreshBtn.disabled = false;
+  }
+}
+if (refreshBtn) refreshBtn.addEventListener('click', () => refreshDashboard());
 
 (async function init() {
   const ok = await loadUser();

@@ -151,6 +151,37 @@ body {
   gap: 1rem;
 }
 .user-bar span { color: var(--text-muted); font-size: 0.9rem; }
+
+/* Icon-only header buttons (e.g. dashboard refresh). */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s, border-color 0.15s;
+}
+.btn-icon:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.btn-icon:active:not(:disabled) { transform: scale(0.96); }
+.btn-icon:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-icon svg { display: block; }
+
+.refresh-btn.is-loading svg {
+  animation: refresh-spin 0.85s linear infinite;
+}
+@keyframes refresh-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 .btn-secondary { background: var(--accent); color: var(--text); }
 .btn-secondary:hover:not(:disabled) { background: #1a3a5c; }
 .btn-outline {
@@ -438,18 +469,24 @@ body {
   padding: 0.4rem 0.5rem;
   overflow: hidden;
   min-height: 0;
+  align-items: stretch;
 }
+/* Left column: fixed share of width so the sidebar cannot push it around. */
 .question-panel {
-  flex: 2;
+  flex: 1 1 65%;
+  min-width: 0;
+  max-width: 72%;
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
   overflow: hidden;
-  min-width: 0;
 }
+/* Right column: fixed width; only the responses list scrolls inside. */
 .sidebar-panel {
-  flex: 1;
-  max-width: 320px;
+  flex: 0 0 320px;
+  width: 320px;
+  min-width: 280px;
+  max-width: 360px;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
@@ -559,8 +596,19 @@ body {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
+}
+/* Single scrollbar for question stem + options (meta and nav stay fixed). */
+.question-body-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
   overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding: 0.15rem 0.1rem 0.65rem 0;
 }
 .question-meta {
   display: flex;
@@ -598,10 +646,10 @@ body {
 .question-text {
   font-size: 1.4rem;
   line-height: 1.5;
-  margin-bottom: 0.6rem;
+  margin: 0;
+  padding: 0 0 0.15rem 0;
   color: var(--text);
-  flex-shrink: 0;
-  overflow-x: auto;
+  flex: 0 0 auto;
   max-width: 100%;
 }
 .question-text p { margin: 0 0 0.5rem 0; }
@@ -656,9 +704,11 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
-  flex: 1;
-  min-height: 0;
-  justify-content: center;
+  flex: 0 0 auto;
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  justify-content: flex-start;
+  align-content: flex-start;
 }
 .option-item {
   display: flex;
@@ -668,7 +718,20 @@ body {
   background: var(--bg);
   border: 1.5px solid rgba(255,255,255,0.08);
   border-radius: 8px;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, background 0.2s;
+}
+.option-item.option-item-correct {
+  border-color: var(--success);
+  background: rgba(74, 222, 128, 0.16);
+  box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.35);
+}
+.option-item.option-item-correct .option-key {
+  background: var(--success);
+  color: #0d2818;
+}
+.option-item.option-item-correct .option-text-row {
+  color: var(--success);
+  font-weight: 600;
 }
 .option-key {
   width: 38px;

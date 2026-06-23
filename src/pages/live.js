@@ -26,6 +26,8 @@ let showLiveResponse = false;
 let showResponseAfterCompletion = true;
 /** Per question index: option breakdown revealed after countdown ended for that question */
 let questionStatsRevealedAfterTimer = {};
+/** False after per-question timer hits 0 until the next question's clicker session starts. */
+let currentQuestionAcceptingResponses = false;
 /** From snapshot: auto-advance question when time is up or all answered; false = teacher uses Next */
 let questionChangeAutomatic = false;
 
@@ -132,16 +134,54 @@ function applyRevealAfterTimerForCurrentQuestionIfNoCountdown() {
   if (!showResponseAfterCompletion || showLiveResponse) return;
   if (perQuestionSeconds > 0) return;
   questionStatsRevealedAfterTimer[currentIndex] = true;
-  renderQuestion();
+  updateOptionStats();
   updateResponsesUI();
 }
 
 function onPerQuestionTimerReachedZero() {
-  if (showResponseAfterCompletion && !showLiveResponse) {
-    questionStatsRevealedAfterTimer[currentIndex] = true;
+  questionStatsRevealedAfterTimer[currentIndex] = true;
+  if (examState === 'running' && currentQuestionAcceptingResponses) {
+    currentQuestionAcceptingResponses = false;
+    window.electronAPI.stopSession(0).catch(() => {});
+    console.log('[EasyTest Live] Question timer ended: clicker session stopped, no more responses for this question.');
   }
-  renderQuestion();
+  updateOptionStats();
   updateResponsesUI();
+}
+
+/** Whether to highlight the correct option in green (after timer or when exam ended). */
+function shouldShowCorrectAnswerHighlight(qIdx) {
+  if (examState === 'ended') return true;
+  if (perQuestionSeconds <= 0) return false;
+  return !!questionStatsRevealedAfterTimer[qIdx];
+}
+
+/** Resolve snapshot correct_answer to internal letter A–J (0-based index in API). */
+function getCorrectAnswerAlphaKey(q) {
+  if (!q) return null;
+  const opts = normalizeQuestionOptionsArray(q);
+  const n = Math.max(1, opts.length);
+  let raw = q.correct_answer;
+  if (raw == null || raw === '') {
+    raw = q.correct_option ?? q.correct_option_index ?? q.correct_index;
+  }
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'number' && !isNaN(raw)) {
+    const idx = raw >= 0 && raw < n ? raw : (raw >= 1 && raw <= n ? raw - 1 : -1);
+    if (idx >= 0 && idx < 26) return String.fromCharCode(65 + idx);
+  }
+  if (Array.isArray(raw) && raw.length > 0) {
+    const i = parseInt(raw[0], 10);
+    if (!isNaN(i) && i >= 0 && i < n) return String.fromCharCode(65 + i);
+  }
+  const num = parseInt(raw, 10);
+  if (!isNaN(num)) {
+    if (num >= 0 && num < n) return String.fromCharCode(65 + num);
+    if (num >= 1 && num <= n) return String.fromCharCode(64 + num);
+  }
+  const s = String(raw).trim().toUpperCase();
+  if (s.length >= 1 && s[0] >= 'A' && s[0] <= 'J') return s[0];
+  return null;
 }
 
 function updateLiveModeHints() {
@@ -366,12 +406,9 @@ function renderQuestion() {
   }
 
   const revealStats = shouldRevealOptionStatsForQuestionIndex(currentIndex);
-  const counts = {};
-  alphaKeys.forEach(k => { counts[k] = 0; });
-  Object.values(responses).forEach(r => {
-    if (r.answer && counts[r.answer] !== undefined) counts[r.answer]++;
-  });
-  const totalResponses = Object.keys(responses).length || 1;
+  const { counts, totalResponses } = getOptionResponseCounts(alphaKeys);
+  const correctAlpha = getCorrectAnswerAlphaKey(q);
+  const showCorrect = shouldShowCorrectAnswerHighlight(currentIndex);
 
   optionsList.innerHTML = optionKeys.map((key, idx) => {
     const rawLabel = (opts && opts[idx] != null) ? (typeof opts[idx] === 'string' ? opts[idx] : (opts[idx].text || opts[idx].label || key)) : key;
@@ -379,8 +416,9 @@ function renderQuestion() {
     const count = revealStats ? (counts[alphaKeys[idx]] || 0) : 0;
     const pct = revealStats && totalResponses > 0 ? Math.round((count / totalResponses) * 100) : 0;
     const mutedClass = revealStats ? '' : ' option-item-stats-hidden';
+    const correctClass = showCorrect && correctAlpha && alphaKeys[idx] === correctAlpha ? ' option-item-correct' : '';
     return `
-      <div class="option-item${mutedClass}">
+      <div class="option-item${mutedClass}${correctClass}" data-alpha-key="${alphaKeys[idx]}">
         <div class="option-key">${optionKeys[idx]}</div>
         <div class="option-content">
           <div class="option-text-row">${escapeHtml(label)}</div>
@@ -391,6 +429,50 @@ function renderQuestion() {
     `;
   }).join('');
   updateStartButtonState();
+}
+
+/** Count responses per option letter (A, B, …) for the current question. */
+function getOptionResponseCounts(alphaKeys) {
+  const counts = {};
+  (alphaKeys || []).forEach(k => { counts[k] = 0; });
+  Object.values(responses).forEach(r => {
+    if (r.answer && counts[r.answer] !== undefined) counts[r.answer]++;
+  });
+  const totalResponses = Object.keys(responses).length || 1;
+  return { counts, totalResponses };
+}
+
+/** Update option bars/counts only — avoids rebuilding the left panel on every clicker press. */
+function updateOptionStats() {
+  if (!optionsList || !questions.length) return;
+  const items = optionsList.querySelectorAll('.option-item[data-alpha-key]');
+  if (!items.length) {
+    renderQuestion();
+    return;
+  }
+  const q = questions[currentIndex];
+  const opts = normalizeQuestionOptionsArray(q);
+  const n = Math.max(1, opts.length);
+  const alphaKeys = [];
+  for (let i = 0; i < n; i++) {
+    alphaKeys.push(i < 26 ? String.fromCharCode(65 + i) : String(i + 1));
+  }
+  const revealStats = shouldRevealOptionStatsForQuestionIndex(currentIndex);
+  const { counts, totalResponses } = getOptionResponseCounts(alphaKeys);
+  const correctAlpha = getCorrectAnswerAlphaKey(q);
+  const showCorrect = shouldShowCorrectAnswerHighlight(currentIndex);
+  items.forEach((el) => {
+    const key = el.getAttribute('data-alpha-key');
+    if (!key || !alphaKeys.includes(key)) return;
+    const count = revealStats ? (counts[key] || 0) : 0;
+    const pct = revealStats && totalResponses > 0 ? Math.round((count / totalResponses) * 100) : 0;
+    el.classList.toggle('option-item-stats-hidden', !revealStats);
+    el.classList.toggle('option-item-correct', !!(showCorrect && correctAlpha && key === correctAlpha));
+    const fill = el.querySelector('.option-bar-fill');
+    const countEl = el.querySelector('.option-count');
+    if (fill) fill.style.width = revealStats ? `${pct}%` : '0%';
+    if (countEl) countEl.textContent = revealStats ? `${pct}%` : '—';
+  });
 }
 
 function renderQuestionNav() {
@@ -810,7 +892,11 @@ async function runSync() {
 }
 
 function onClickerResponse(data) {
-  if (examState !== 'running' && examState !== 'paused') return;
+  if (examState !== 'running') return;
+  if (!currentQuestionAcceptingResponses) {
+    console.log('[EasyTest Live] Ignoring response: question timer has ended for this question.');
+    return;
+  }
   const answer = (data.answer || '').toUpperCase().charAt(0);
   if (!(answer >= 'A' && answer <= 'J')) return;
 
@@ -883,7 +969,7 @@ function onClickerResponse(data) {
   }
 
   updateResponsesUI();
-  renderQuestion();
+  updateOptionStats();
 
   // Auto-advance when everyone answered (only if exam setting allows automatic question change)
   const totalParticipants = totalParticipantCount();
@@ -1011,6 +1097,7 @@ function getCurrentQuestionOptionCount() {
 
 // Start a clicker session for the question currently shown on screen.
 async function startClickerSessionForCurrentQuestion() {
+  currentQuestionAcceptingResponses = true;
   const optionCount = getCurrentQuestionOptionCount();
   const optionDisplay = getCurrentQuestionOptionDisplay();
   // Per-question SDK reattempt flag: hardware lock when this question disallows revise.
